@@ -6,7 +6,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 -->
 <!-- lang: en-GB -->
-> **pattex67 fork:** PokeDinner + Eglantine nx2 with fixes from other forks and new work for Star Fox
+> **Aubépine (pattex67 fork):** PokeDinner + Eglantine nx2 with fixes from other forks and new work for Star Fox
 > and Yoshi and the Mysterious Book. See [pattex/README.md](pattex/README.md) for the patches, the
 > Star Fox window patch and the games tested.
 

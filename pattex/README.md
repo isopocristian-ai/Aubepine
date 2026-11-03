@@ -1,4 +1,4 @@
-# pattex67/Eglantine — what this fork adds
+# Aubépine (pattex67/Aubepine) — what this fork adds
 
 This branch is [PokeDinner](https://git.eden-emu.dev/Franseven/PokeDinner-a-Eglantine-Fork) (master 216b5034c)
 merged with [Eglantine](https://github.com/Djihads80/Eglantine) nx2 (f50099038, build 174) plus #374, fixes
@@ -57,7 +57,7 @@ as Eglantine.
 
 # En français
 
-Cette branche réunit PokeDinner, Eglantine nx2 (build 174 + #374), des correctifs repris d'autres
+Aubépine réunit PokeDinner, Eglantine nx2 (build 174 + #374), des correctifs repris d'autres
 forks (Nemyu, Selevet, MythosOfs) et notre travail pour faire tourner **Star Fox** (codec audio matériel
 `hwacod`, sortie son sysmix, une quinzaine d'instructions de shader) et **Yoshi et le Livre mystérieux**
 (plus aucun shader refusé). Les patchs sont dans `patches/`, le patch de fenêtre de Star Fox dans
