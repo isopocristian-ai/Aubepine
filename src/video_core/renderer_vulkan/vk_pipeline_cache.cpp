@@ -399,6 +399,17 @@ size_t GetTotalPipelineWorkers() {
 #endif
 }
 
+// EDEN_NX2_AMD_PIPELINE_WORKERS=<n>: pipeline workers on a driver marked as breaking with parallel
+// compiles. One by default. With one, AMD's Windows driver rebuilds a title's whole disk cache on a
+// single core at each boot: Kirby Air Riders' 1925 pipelines, about 0.5 s per compute pipeline.
+size_t GetSerializedPipelineWorkers() {
+    const char* const value = std::getenv("EDEN_NX2_AMD_PIPELINE_WORKERS");
+    if (value == nullptr) {
+        return 1ULL;
+    }
+    return std::clamp<size_t>(std::strtoul(value, nullptr, 10), 1ULL, GetTotalPipelineWorkers());
+}
+
 // EDEN_NX2_ASYNC_TRANSLATION=0: translate every graphics pipeline on the GPU thread, as before
 // (for A/B tests). Otherwise, with asynchronous shaders on, native graphics pipelines are
 // translated on worker threads.
@@ -488,7 +499,8 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
                        !IsAmdProprietaryWindows(device_.GetDriverID())},
       translation_wait_budget{GetTranslationWaitBudget()},
       num_translation_threads{use_async_translation ? GetTotalTranslationWorkers() : 0},
-      workers(device.HasBrokenParallelShaderCompiling() ? 1ULL : GetTotalPipelineWorkers(),
+      workers(device.HasBrokenParallelShaderCompiling() ? GetSerializedPipelineWorkers()
+                                                        : GetTotalPipelineWorkers(),
               "VkPipelineBuilder", {}, Common::ThreadPlacement::Background),
       serialization_thread(1, "VkPipelineSerialization", {},
                            Common::ThreadPlacement::Background),

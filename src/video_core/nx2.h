@@ -26,11 +26,14 @@ inline std::atomic<u64> g_nx2_program_id{0};
 // Titles whose guest side reads GPU-written buffer data through a path the buffer cache does not
 // see, so their buffers must be copied back to guest memory at every fence
 // (BufferCache::AsyncBufferDownloads, EDEN_NX2_BUFFER_DOWNLOADS). 0400A3A01EE4C000 is Pokemon
-// Pokopia: with the copy-back off its sky is black or flickers. Open work: find what reads it,
-// then the list goes.
+// Pokopia: with the copy-back off its sky is black or flickers. 0400C3F00006E000 is Mario Kart
+// World: its CPU reads road textures written by compute shaders. Not a default for every title:
+// Kirby Air Riders filled 30 GiB of host memory with it. Open work: find what reads it, then the
+// list goes.
 inline bool Nx2NeedsBufferDownloads() {
     switch (g_nx2_program_id.load(std::memory_order_relaxed)) {
     case 0x0400A3A01EE4C000ULL:
+    case 0x0400C3F00006E000ULL:
         return true;
     default:
         return false;

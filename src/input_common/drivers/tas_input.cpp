@@ -4,7 +4,9 @@
 // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <sstream>
 #include <fmt/ranges.h>
 
@@ -180,7 +182,26 @@ std::tuple<TasState, size_t, std::array<size_t, PLAYER_NUMBER>> Tas::GetStatus()
     return {state, current_command, lengths};
 }
 
+void Tas::CheckTrigger() {
+    // EDEN_NX2_TAS_TRIGGER=<file>: when the file appears it is deleted and the scripts are loaded
+    // and played from the start, so that they can be run without touching the window.
+    static const char* const trigger = std::getenv("EDEN_NX2_TAS_TRIGGER");
+    if (trigger == nullptr) {
+        return;
+    }
+    std::error_code ec;
+    if (!std::filesystem::exists(trigger, ec)) {
+        return;
+    }
+    std::filesystem::remove(trigger, ec);
+    Settings::values.tas_enable.SetValue(true);
+    needs_reset = true;
+    is_running = true;
+    LOG_INFO(Input, "TAS scripts started by {}", trigger);
+}
+
 void Tas::UpdateThread() {
+    CheckTrigger();
     if (!Settings::values.tas_enable) {
         if (is_running) {
             Stop();

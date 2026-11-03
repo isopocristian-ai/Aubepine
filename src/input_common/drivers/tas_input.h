@@ -188,6 +188,9 @@ private:
     /// Sets an axis for a particular pad to the given value.
     void SetTasAxis(const PadIdentifier& identifier, TasAxis axis, f32 value);
 
+    /// Starts the scripts when the file named by EDEN_NX2_TAS_TRIGGER appears.
+    void CheckTrigger();
+
     size_t script_length{0};
     bool is_recording{false};
     bool is_running{false};
