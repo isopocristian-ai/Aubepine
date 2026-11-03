@@ -22,6 +22,7 @@ files (`git am patches/*.patch` on PokeDinner 216b5034c reproduces the branch):
 | 0005 | **Star Fox**: the Switch 2 sound mixer streams (`audsmx:u` / sysmix) now play through Eden's output instead of being drained silently (ring data at +0x1040, s16 and f32); shader lowering for SUST with any channel mask, SURED on 2D_ARRAY/3D, `SHF.R.S32.HI`, TLD4 on ARRAY_2D, PLOP3 with a second destination. |
 | 0006 | **Yoshi**: SULD/SUST/SURED on texel buffers and 1D images, SUATOM with result (0x593), TLD4.B on ARRAY_2D (0xf63), IMNMX with a wide immediate, `SHF.L.HI` forms, ATOMG with bit 90, I2FP with an immediate. |
 | 0007 | Shows the emulator as **Aubépine** (window title, menus, dialogs, version); hotkey ids and the Qt application name stay. |
+| 0009 | **Shader cache**: native programs that read as incomplete (zeros, branches past the capture) are retried every 100 ms for a minute instead of being rejected for good (Yoshi docked streams shaders in; fixes its white screen after the intro). |
 | 0008 | **Yoshi docked**: GPU-only regions backed whole for this game (backed as written, two shaders read as zeros and it aborted after the intro), Eglantine PR #345 (page table block id overflow), TLD4.B 0x364, 0xf63 with an offset, SURED with any operation. |
 
 Patches 0004 to 0006 are this fork's own work and only touch a few files
@@ -47,7 +48,7 @@ the display then reads the right image with the right layout.
 | Kirby Air Riders | Menus, races and results render; race scenery still partly dark; 8 rejected shaders. |
 | Metroid Prime 4 | 60 FPS from loose dumps (RomFS fallback). |
 | Star Fox | Title, intro cutscenes, training mission, sound; no rejected shaders (needs the window patch). |
-| Yoshi and the Mysterious Book | Title, intro and the first chapter map in docked mode, 43-60 FPS (GPU-only memory backed whole for this game: backed as written, two shaders read as zeros and it aborted after the intro). Still 10 rejected shaders; tested only up to the chapter 1 map. |
+| Yoshi and the Mysterious Book | Docked: full intro, then gameplay at 60 FPS with no rejected shaders and no skipped draws (GPU-only memory backed whole for this game; shaders it streams in are retried until their code has arrived). Tested through the intro and the first minutes of play. |
 
 ## Credits
 
@@ -62,6 +63,6 @@ as Eglantine.
 Aubépine réunit PokeDinner, Eglantine nx2 (build 174 + #374), des correctifs repris d'autres
 forks (Nemyu, Selevet, MythosOfs) et notre travail pour faire tourner **Star Fox** (codec audio matériel
 `hwacod`, sortie son sysmix, une quinzaine d'instructions de shader) et **Yoshi et le Livre mystérieux**
-(va en jeu en mode TV, testé jusqu'à la carte du premier chapitre). Les patchs sont dans `patches/`, le patch de fenêtre de Star Fox dans
+(se joue en mode TV à 60 FPS sans shader refusé). Les patchs sont dans `patches/`, le patch de fenêtre de Star Fox dans
 `star-fox/` (à copier dans le dossier `load` d'Eglantine). Travail fait avec un assistant IA
 (Claude Opus 5.5), testé en sessions courtes sur Windows 11 avec une Radeon RX 9070 XT.
