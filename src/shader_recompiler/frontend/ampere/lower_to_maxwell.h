@@ -1153,7 +1153,8 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
         case 0x3a8: { // ATOMG.E.ADD.STRONG.GPU U32 at a 64-bit register address plus an offset.
             const u32 address = insn.Bits(24, 8);
             const s32 offset = static_cast<s32>(insn.Bits(40, 24) << 8) >> 8;
-            if (insn.words[2] != 0x001ee100 || (address & 1) || address >= 246 ||
+            // Bit 90 (Yoshi sets it) changes nothing here.
+            if ((insn.words[2] & ~(1U << 26)) != 0x001ee100 || (address & 1) || address >= 246 ||
                 offset < -0x80000 || offset > 0x7ffff)
                 return fail(index, "native global atomic register mode");
             emit(0xed00000000000000ULL | predicate | dest | (u64{address} << 8) |
@@ -1177,8 +1178,10 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             const u32 binding = insn.Bits(54, 5), offset = insn.Bits(40, 14);
             const u32 coordinate = insn.Bits(24, 8);
             const u32 channels = insn.Bits(72, 4);
-            const u32 dimension = insn.Bits(61, 3); // Maxwell's codes: 3 = 2D, 4 = 2D_ARRAY, 5 = 3D
-            if ((insn.words[2] & ~0xf00U) != 0x001e0000 || channels == 0 || dimension < 3 || dimension > 5 ||
+            // Maxwell's codes: 0 = 1D, 1 = 1D_BUFFER, 2 = 1D_ARRAY, 3 = 2D, 4 = 2D_ARRAY, 5 = 3D
+            // (Yoshi's compute reads texel buffers).
+            const u32 dimension = insn.Bits(61, 3);
+            if ((insn.words[2] & ~0xf00U) != 0x001e0000 || channels == 0 || dimension > 5 ||
                 binding >= 18 || offset > 0x1fff || insn.Bits(59, 2) || dest == 255 ||
                 coordinate > (dimension >= 4 ? 252U : 253U))
                 return fail(index, "native formatted surface load mode");
@@ -1197,7 +1200,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             const u32 channels = insn.Bits(72, 4);
             const bool strong = (insn.words[2] & ~0xf00U) == 0x0010a000; // .STRONG.GPU: fenced on both sides
             if (((insn.words[2] & ~0xf00U) != 0x00100000 && !strong) || channels == 0 ||
-                dimension < 3 || dimension > 5 ||
+                dimension > 5 ||
                 binding >= 18 || offset > 0x1fff || insn.Bits(59, 2) || data > 252 || coordinate > (dimension >= 4 ? 252U : 253U))
                 return fail(index, "native formatted surface store mode");
             // A second descriptor buffer: SUST.B with the handle, loaded from that buffer, in R250.
@@ -1212,11 +1215,29 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             if (strong) emit(0xef98000000000000ULL | predicate | (u64{1} << 8));
             break;
         }
+        case 0x593: { // SUATOM.D.{1D..3D}.{ADD..EXCH}.STRONG.GPU.IGN U32 with the old value, direct descriptor (Yoshi).
+            const u32 binding = insn.Bits(54, 5), offset = insn.Bits(40, 14);
+            const u32 data = insn.Bits(32, 8), coordinate = insn.Bits(24, 8);
+            const u32 dimension = insn.Bits(61, 3), operation = insn.Bits(87, 4);
+            if ((insn.words[2] & ~(0xfU << 23)) != 0x001ee000 || operation > 8 || dimension > 5 ||
+                binding >= 18 || offset > 0x1fff || insn.Bits(59, 2) ||
+                coordinate > (dimension == 2 || dimension >= 4 ? 252U : 253U) || data > 253)
+                return fail(index, "native surface atomic mode");
+            if (result.required_texture_buffer != ~0U && result.required_texture_buffer != binding)
+                return fail(index, "native surface descriptor buffer conflict");
+            result.required_texture_buffer = binding;
+            // Maxwell SUATOM: Rd 0-7, coordinates 8-15, operand 20-27, op 29-32 (same order), type
+            // 33-35, bound offset 36-48, size 51-53 (0 = U32).
+            emit(0xea00000000000000ULL | predicate | dest | (u64{coordinate} << 8) |
+                 (u64{data} << 20) | (u64{operation} << 29) | (u64{dimension} << 33) |
+                 (u64{offset} << 36));
+            break;
+        }
         case 0x59f: { // SURED.D.{2D,2D_ARRAY,3D}.ADD.STRONG.GPU.IGN U32, direct descriptor (title 1's race compute; Star Fox's 3D).
             const u32 binding = insn.Bits(54, 5), offset = insn.Bits(40, 14);
             const u32 data = insn.Bits(32, 8), coordinate = insn.Bits(24, 8);
             const u32 dimension = insn.Bits(61, 3); // Maxwell's codes: 3 = 2D, 4 = 2D_ARRAY, 5 = 3D
-            if (insn.words[2] != 0x0010e000 || dimension < 3 || dimension > 5 || binding >= 18 ||
+            if (insn.words[2] != 0x0010e000 || dimension > 5 || binding >= 18 ||
                 offset > 0x1fff || insn.Bits(59, 2) || coordinate > (dimension >= 4 ? 252U : 253U))
                 return fail(index, "native surface reduction mode");
             if (result.required_texture_buffer != ~0U && result.required_texture_buffer != binding)
@@ -1256,6 +1277,15 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 (insn.words[2] & ~(0x000118ffU | (opcode == 0xc19 ? 0x08000000U : 0U))) == 0x00000400U) {
                 load_shift();
                 emit(base(0x5c28000000000000ULL) | (u64{high} << 8) | (u64{shift} << 20) | (u64{1} << 48));
+                break;
+            }
+            // SHF.L[.W].U32.HI Rd, RZ, n, Rb: the high word of Rb:0 << n is Rb << n (Yoshi).
+            if (!right && high_result && low == 255 && high != 255 && insn.Bits(73, 2) == 3 &&
+                shift != ~0U && shift_operand &&
+                (insn.words[2] & ~(0x000118ffU | (opcode == 0xc19 ? 0x08000000U : 0U))) == 0x00000600U) {
+                load_shift();
+                emit(base(0x5c48000000000000ULL) | (u64{high} << 8) | (u64{shift} << 20) |
+                     (u64{insn.Bits(75, 1)} << 39));
                 break;
             }
             if (!shift_operand || insn.Bits(73, 2) != 3 || shift == ~0U ||
@@ -1968,20 +1998,31 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 break;
             }
             // ARRAY_2D without offsets: the operands are (layer, x | y) as for TEX, and Maxwell
-            // TLD4 (type 3) takes layer, x, y from consecutive registers (Star Fox's compute).
-            if (!bindless && insn.Bits(61, 3) == 5 && !insn.Bits(76, 2) && !insn.Bits(78, 3) &&
-                insn.Bits(81, 3) == 7 && !insn.Bits(59, 1) && !insn.Bits(89, 1) && !insn.Bits(91, 1) &&
-                mask && binding < 18 && insn.Bits(40, 14) <= 0x1fff && source_a != 255 &&
-                source_a + 2 < 246 && source_b < 246 && dest != 255) {
-                if (result.required_texture_buffer != ~0U && result.required_texture_buffer != binding)
-                    return fail(index, "native texture descriptor buffer conflict");
-                result.required_texture_buffer = binding;
+            // TLD4 (type 3) takes layer, x, y from consecutive registers (Star Fox's compute);
+            // 0xf63 (Yoshi) is TLD4.B with the handle in R246.
+            if (insn.Bits(61, 3) == 5 && !insn.Bits(76, 2) && !insn.Bits(78, 3) &&
+                insn.Bits(81, 3) == 7 && !insn.Bits(59, 1) && !insn.Bits(89, 1) &&
+                (bindless ? (handle < 246 && !insn.Bits(46, 13) && insn.Bits(91, 1))
+                          : (!insn.Bits(91, 1) && binding < 18 && insn.Bits(40, 14) <= 0x1fff)) &&
+                mask && source_a != 255 && source_a + 2 < 246 && source_b < 246 && dest != 255) {
+                if (!bindless) {
+                    if (result.required_texture_buffer != ~0U && result.required_texture_buffer != binding)
+                        return fail(index, "native texture descriptor buffer conflict");
+                    result.required_texture_buffer = binding;
+                }
                 emit(0x5c98000000000000ULL | predicate | 250 | (u64{15} << 39) | (u64{source_a} << 20));
                 emit(0x5c98000000000000ULL | predicate | 251 | (u64{15} << 39) | (u64{source_a + 1} << 20));
                 emit(0x5c98000000000000ULL | predicate | 252 | (u64{15} << 39) | (u64{source_b} << 20));
+                if (bindless) {
+                    emit(0x5c98000000000000ULL | predicate | 246 | (u64{15} << 39) | (u64{handle} << 20));
+                    emit(0xdec0000000000000ULL | predicate | 250 | (u64{250} << 8) | (u64{246} << 20) |
+                         (u64{3} << 28) | (u64{mask} << 31) | (u64{insn.Bits(87, 2)} << 38) |
+                         (u64{insn.Bits(90, 1)} << 49) | (u64{7} << 51));
+                } else {
                 emit(0xc800000000000000ULL | predicate | 250 | (u64{250} << 8) | (u64{255} << 20) |
                      (u64{3} << 28) | (u64{mask} << 31) | (u64{insn.Bits(40, 14)} << 36) |
                      (u64{insn.Bits(90, 1)} << 49) | (u64{7} << 51) | (u64{insn.Bits(87, 2)} << 56));
+                }
                 const bool split = second_dest != 255;
                 for (u32 i = 0; i < components; ++i) {
                     const u32 target = !split || i < 2 ? static_cast<u32>(dest) + i : second_dest + (i - 2);
@@ -2484,12 +2525,14 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                  (u64{source} << 8) | (u64{shift} << 20) | (u64{insn.Bits(75, 1)} << 39));
             break;
         }
-        case 0x419: { // SHF.L.W.U32.HI Rd, RZ, Rb, imm (high word of imm:0 << Rb) = imm << (Rb & 31)
-            if (insn.Bits(24, 8) != 255 || (insn.words[2] & ~0xffU) != 0x00010e00)
+        case 0x419: { // SHF.L[.W].U32.HI Rd, RZ, Rb, imm (high word of imm:0 << Rb) = imm << (Rb & 31)
+            // Without .W (bit 75, Yoshi) the shift clamps at 32, as Maxwell SHL without .W.
+            const bool wrap = insn.Bits(75, 1) != 0;
+            if (insn.Bits(24, 8) != 255 || (insn.words[2] & ~0x8ffU) != 0x00010600)
                 return fail(index, "native funnel shift immediate mode");
             mov_imm(250, insn.words[1]);
             emit(base(0x5c48000000000000ULL) | (u64{250} << 8) | (u64{insn.Bits(64, 8)} << 20) |
-                 (u64{1} << 39));
+                 (u64{wrap ? 1U : 0U} << 39));
             break;
         }
         case 0x805: { // CS2R SRZ
@@ -2513,7 +2556,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                  (u64{half ? selector * 2 : selector} << 41));
             break;
         }
-        case 0x245: case 0xa45: case 0xc45: { // I2FP.F32.U32
+        case 0x245: case 0x845: case 0xa45: case 0xc45: { // I2FP.F32.U32 (0x845: immediate, Yoshi)
             // Bits 78-79: rounding (RN/RM/RP/RZ), as Maxwell I2F's bits 39-40.
             if ((insn.words[2] & ~(0x400U | 0xc000U | (opcode == 0xc45 ? 0x08000000U : 0U))) != 0x00201000) return fail(index, "native packed integer-to-float format");
             const u32 src = operand(1, false);
@@ -2658,8 +2701,10 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             break;
         }
         case 0x217: case 0x817: case 0xa17: case 0xc17: { // IMNMX register, immediate, cbuf or uniform operand.
+            // An immediate past Maxwell's signed 20 bits goes through R250 (Yoshi: 0x1fffffff).
+            const bool wide_immediate =
+                opcode == 0x817 && insn.words[1] > 0x7ffffU && insn.words[1] < 0xfff80000U;
             if ((insn.words[2] & ~(0x04000200U | (opcode == 0xc17 ? 0x08000000U : 0U))) != 0x03800000 ||
-                (opcode == 0x817 && insn.words[1] > 0x7ffffU && insn.words[1] < 0xfff80000U) ||
                 (opcode != 0xa17 && opcode != 0x817 && insn.words[1] > 255U) ||
                 (opcode == 0xa17 && (!valid_cbuf() || insn.Bits(62, 2))))
                 return fail(index, "native integer min/max mode");
@@ -2669,6 +2714,12 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                                : opcode == 0x817 ? insn.words[1] & 0x7ffffU
                                                  : insn.words[1];
             if (source == ~0U) return fail(index, "native uniform min/max operand");
+            if (wide_immediate) {
+                mov_imm(250, insn.words[1]);
+                emit(base(0x5c20000000000000ULL) | (u64{insn.Bits(24, 8)} << 8) | (u64{250} << 20) |
+                     (u64{insn.Bits(87, 4)} << 39) | (u64{insn.Bits(73, 1)} << 48));
+                break;
+            }
             emit(base(opcode == 0x817 ? 0x3820000000000000ULL : 0x5c20000000000000ULL) |
                  (u64{insn.Bits(24, 8)} << 8) | (u64{source} << 20) |
                  (u64{opcode == 0x817 ? insn.words[1] >> 31 : 0U} << 56) |
