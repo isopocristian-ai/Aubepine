@@ -17,6 +17,9 @@
 
 #include <fmt/ranges.h>
 
+#include "audio_core/audio_core.h"
+#include "audio_core/sink/sink.h"
+#include "audio_core/sink/sink_stream.h"
 #include "common/string_util.h"
 #include "core/core.h"
 #include "core/core_timing.h"
@@ -31,10 +34,11 @@ namespace Service::Audio {
 // Switch 2 sound mixer streams (nn::audio::sysmix, behind audsmx:u). A stream is a ring buffer in
 // the game's own memory: CreateStream hands over its address and size (4 KiB aligned), OpenStream
 // its format and length in frames, and once the streams are engaged the system takes frames out of
-// the ring at the stream's sample rate. Eden doesn't mix these into its output yet; it drains the
-// rings in real time so the game sees its audio being played (Switch Sports' menu movie feeds one).
-// The ring's shared indices, in frames modulo (frame count + 1): the system's read index at
-// buffer + 0x44, the game's write index at buffer + 0x1004.
+// the ring at the stream's sample rate. The frames taken go to Eden's output (sample types 2, s16,
+// and 5, f32; others are drained silently), so the game sees its audio being played (Switch
+// Sports' menu movie feeds one; Star Fox plays everything through one). The ring's shared indices,
+// in frames modulo (frame count + 1): the system's read index at buffer + 0x44, the game's write
+// index at buffer + 0x1004; the frames start at buffer + 0x1040 (nn::audio::sysmix's ring setup).
 struct Nx2SysmixStream {
     u32 id{};
     u32 owner{}; ///< the user session whose timer drains it
@@ -51,6 +55,16 @@ struct Nx2SysmixStream {
     s32 data_threshold{}; ///< free frames that signal the data event
     Kernel::KEvent* state_event{};
     Kernel::KEvent* data_event{};
+    AudioCore::Sink::Sink* output{};
+    AudioCore::Sink::SinkStream* sink{}; ///< Eden's output stream, made on the first frames played
+    u64 sink_tag{};
+
+    ~Nx2SysmixStream() {
+        if (sink != nullptr) {
+            sink->Stop();
+            output->CloseStream(sink);
+        }
+    }
 };
 
 struct Nx2SysmixStreams {
@@ -416,11 +430,56 @@ private:
     static constexpr std::chrono::nanoseconds DrainInterval{std::chrono::milliseconds{5}};
     static constexpr u64 ReadIndexOffset = 0x44;
     static constexpr u64 WriteIndexOffset = 0x1004;
+    static constexpr u64 DataOffset = 0x1040;
 
     // Takes up to one interval's worth of frames out of each engaged ring (frames owed while a ring
     // is empty are dropped, as an underrun plays silence), and signals the data event of every open
     // stream with at least its threshold of free frames, engaged or not: the game fills the ring
     // before it engages the stream.
+    // Hands `count` frames from ring index `read` to Eden's output as s16.
+    static void Play(Core::System& system, Nx2SysmixStream& stream, u32 read, u32 count) {
+        const u32 sample_size = stream.sample_type == 2 ? 2 : stream.sample_type == 5 ? 4 : 0;
+        if (sample_size == 0 || stream.channels == 0 || stream.channels > 6) {
+            return;
+        }
+        if (stream.sink == nullptr) {
+            stream.output = &system.AudioCore().GetOutputSink();
+            stream.sink = stream.output->AcquireSinkStream(system, stream.channels, "nx2:sysmix",
+                                                           AudioCore::Sink::StreamType::Out);
+            stream.sink->Start();
+            LOG_INFO(Service_Audio, "stream {} plays through Eden's output: {} channels, type {}",
+                     stream.id, stream.channels, stream.sample_type);
+        }
+        auto& memory = system.ApplicationMemory();
+        const u32 capacity = stream.frames + 1;
+        const u64 frame_bytes = u64{sample_size} * stream.channels;
+        std::vector<u8> raw(u64{count} * frame_bytes);
+        const u32 first = (std::min)(count, capacity - read);
+        memory.ReadBlock(stream.buffer + DataOffset + u64{read} * frame_bytes, raw.data(),
+                         first * frame_bytes);
+        if (first < count) {
+            memory.ReadBlock(stream.buffer + DataOffset, raw.data() + first * frame_bytes,
+                             (count - first) * frame_bytes);
+        }
+        std::vector<s16> samples(u64{count} * stream.channels);
+        if (sample_size == 2) {
+            std::memcpy(samples.data(), raw.data(), raw.size());
+        } else {
+            for (size_t i = 0; i < samples.size(); ++i) {
+                f32 value{};
+                std::memcpy(&value, raw.data() + i * 4, 4);
+                samples[i] = static_cast<s16>(std::clamp(value * 32767.0f, -32768.0f, 32767.0f));
+            }
+        }
+        AudioCore::Sink::SinkBuffer buffer{
+            .frames = count,
+            .frames_played = 0,
+            .tag = stream.sink_tag++,
+            .consumed = false,
+        };
+        stream.sink->AppendBuffer(buffer, samples);
+    }
+
     static void Drain(Core::System& system, Nx2SysmixStreams& state, u32 owner) {
         std::scoped_lock lk{state.mutex};
         auto& memory = system.ApplicationMemory();
@@ -442,6 +501,7 @@ private:
                 stream->owed_frames -= owed;
                 const u32 taken = (std::min)(filled, owed);
                 if (taken != 0) {
+                    Play(system, *stream, read, taken);
                     memory.Write32(stream->buffer + ReadIndexOffset, (read + taken) % capacity);
                     filled -= taken;
                 }

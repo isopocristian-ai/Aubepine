@@ -783,7 +783,18 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
         case 0x81c: { // PLOP3.LUT; bit 67 makes the third source a uniform predicate.
             const u32 target = insn.Bits(81, 3);
             const u32 lut = insn.Bits(64, 3) | (insn.Bits(72, 5) << 3);
-            if (target == 7 || insn.Bits(84, 3) != 7 ||
+            // A second destination (bits 84-86) with its own table (bits 16-23), from the same
+            // sources (Star Fox's cutscenes): both tables run on the sources the helper has
+            // already copied to R250-R252, so a destination that is also a source is fine.
+            const u32 second = insn.Bits(84, 3);
+            if (second != 7 && !insn.Bits(67, 1) && !insn.words[1]) {
+                predicate_lut(lut, insn.Bits(87, 4), insn.Bits(77, 4), insn.Bits(68, 4), target);
+                emit(0x5be0000000000000ULL | predicate | 255 | (u64{250} << 8) | (u64{251} << 20) |
+                     (u64{insn.Bits(16, 8)} << 28) | (u64{3} << 36) | (u64{252} << 39) |
+                     (u64{second} << 48));
+                break;
+            }
+            if (target == 7 || second != 7 ||
                 insn.Bits(16, 8) || insn.words[1])
                 return fail(index, "native predicate LUT mode");
             if (!insn.Bits(67, 1) && (lut == 0xfe || lut == 0xa8)) {
@@ -1178,12 +1189,15 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 (u64{channels} << 20) | (u64{dimension} << 33) | (u64{offset} << 36) | (u64{1} << 51));
             break;
         }
-        case 0xb9b: { // SUST.P.2D/3D.IGN, direct descriptor and all four channels.
+        case 0xb9b: { // SUST.P.2D/3D.IGN, direct descriptor, channel mask at 72-75.
             const u32 binding = insn.Bits(54, 5), offset = insn.Bits(40, 14);
             const u32 data = insn.Bits(32, 8), coordinate = insn.Bits(24, 8);
             const u32 dimension = insn.Bits(61, 3);
-            const bool strong = insn.words[2] == 0x0010af00; // .STRONG.GPU: fenced on both sides
-            if ((insn.words[2] != 0x00100f00 && !strong) || dimension < 3 || dimension > 5 ||
+            // Any channel mask (Star Fox's video conversion stores one channel), as Maxwell's.
+            const u32 channels = insn.Bits(72, 4);
+            const bool strong = (insn.words[2] & ~0xf00U) == 0x0010a000; // .STRONG.GPU: fenced on both sides
+            if (((insn.words[2] & ~0xf00U) != 0x00100000 && !strong) || channels == 0 ||
+                dimension < 3 || dimension > 5 ||
                 binding >= 18 || offset > 0x1fff || insn.Bits(59, 2) || data > 252 || coordinate > (dimension >= 4 ? 252U : 253U))
                 return fail(index, "native formatted surface store mode");
             // A second descriptor buffer: SUST.B with the handle, loaded from that buffer, in R250.
@@ -1193,16 +1207,17 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             }
             if (strong) emit(0xef98000000000000ULL | predicate | (u64{1} << 8)); // MEMBAR.GL
             emit(0xeb20000000000000ULL | predicate | data | (u64{coordinate} << 8) |
-                (u64{15} << 20) | (u64{dimension} << 33) |
+                (u64{channels} << 20) | (u64{dimension} << 33) |
                 (bindless ? u64{250} << 39 : (u64{offset} << 36) | (u64{1} << 51)));
             if (strong) emit(0xef98000000000000ULL | predicate | (u64{1} << 8));
             break;
         }
-        case 0x59f: { // SURED.D.2D.ADD.STRONG.GPU.IGN U32, direct descriptor (title 1's race compute).
+        case 0x59f: { // SURED.D.{2D,2D_ARRAY,3D}.ADD.STRONG.GPU.IGN U32, direct descriptor (title 1's race compute; Star Fox's 3D).
             const u32 binding = insn.Bits(54, 5), offset = insn.Bits(40, 14);
             const u32 data = insn.Bits(32, 8), coordinate = insn.Bits(24, 8);
-            if (insn.words[2] != 0x0010e000 || insn.Bits(61, 3) != 3 || binding >= 18 ||
-                offset > 0x1fff || insn.Bits(59, 2) || coordinate > 253)
+            const u32 dimension = insn.Bits(61, 3); // Maxwell's codes: 3 = 2D, 4 = 2D_ARRAY, 5 = 3D
+            if (insn.words[2] != 0x0010e000 || dimension < 3 || dimension > 5 || binding >= 18 ||
+                offset > 0x1fff || insn.Bits(59, 2) || coordinate > (dimension >= 4 ? 252U : 253U))
                 return fail(index, "native surface reduction mode");
             if (result.required_texture_buffer != ~0U && result.required_texture_buffer != binding)
                 return fail(index, "native surface descriptor buffer conflict");
@@ -1210,7 +1225,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             // Maxwell SURED (as the frontend decodes it): operand 0-7, coordinates 8-15, ADD and
             // U32 are zero at 24 and 20, type 33 (3 = 2D), bound offset 36, bound 51.
             emit(0xeb40000000000000ULL | predicate | data | (u64{coordinate} << 8) |
-                (u64{3} << 33) | (u64{offset} << 36) | (u64{1} << 51));
+                (u64{dimension} << 33) | (u64{offset} << 36) | (u64{1} << 51));
             break;
         }
         case 0x301: // BREV register.
@@ -1232,6 +1247,15 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 (insn.words[2] & ~(0x000118ffU | (opcode == 0xc19 ? 0x08000000U : 0U))) == 0x00000600U) {
                 load_shift();
                 emit(base(0x5c28000000000000ULL) | (u64{low} << 8) | (u64{shift} << 20));
+                break;
+            }
+            // SHF.R.S32.HI Rd, RZ, n, Rb (type 2 at 73-74): an arithmetic right shift of Rb, as
+            // Maxwell's signed SHR, which also fills with the sign past 31 (Star Fox's compute).
+            if (right && high_result && low == 255 && high != 255 && insn.Bits(73, 2) == 2 &&
+                shift != ~0U && shift_operand &&
+                (insn.words[2] & ~(0x000118ffU | (opcode == 0xc19 ? 0x08000000U : 0U))) == 0x00000400U) {
+                load_shift();
+                emit(base(0x5c28000000000000ULL) | (u64{high} << 8) | (u64{shift} << 20) | (u64{1} << 48));
                 break;
             }
             if (!shift_operand || insn.Bits(73, 2) != 3 || shift == ~0U ||
@@ -1941,6 +1965,28 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                          (component < 2 ? static_cast<u32>(dest) + component
                                         : second_dest + component - 2) |
                          (u64{15} << 39) | (u64{250 + component} << 20));
+                break;
+            }
+            // ARRAY_2D without offsets: the operands are (layer, x | y) as for TEX, and Maxwell
+            // TLD4 (type 3) takes layer, x, y from consecutive registers (Star Fox's compute).
+            if (!bindless && insn.Bits(61, 3) == 5 && !insn.Bits(76, 2) && !insn.Bits(78, 3) &&
+                insn.Bits(81, 3) == 7 && !insn.Bits(59, 1) && !insn.Bits(89, 1) && !insn.Bits(91, 1) &&
+                mask && binding < 18 && insn.Bits(40, 14) <= 0x1fff && source_a != 255 &&
+                source_a + 2 < 246 && source_b < 246 && dest != 255) {
+                if (result.required_texture_buffer != ~0U && result.required_texture_buffer != binding)
+                    return fail(index, "native texture descriptor buffer conflict");
+                result.required_texture_buffer = binding;
+                emit(0x5c98000000000000ULL | predicate | 250 | (u64{15} << 39) | (u64{source_a} << 20));
+                emit(0x5c98000000000000ULL | predicate | 251 | (u64{15} << 39) | (u64{source_a + 1} << 20));
+                emit(0x5c98000000000000ULL | predicate | 252 | (u64{15} << 39) | (u64{source_b} << 20));
+                emit(0xc800000000000000ULL | predicate | 250 | (u64{250} << 8) | (u64{255} << 20) |
+                     (u64{3} << 28) | (u64{mask} << 31) | (u64{insn.Bits(40, 14)} << 36) |
+                     (u64{insn.Bits(90, 1)} << 49) | (u64{7} << 51) | (u64{insn.Bits(87, 2)} << 56));
+                const bool split = second_dest != 255;
+                for (u32 i = 0; i < components; ++i) {
+                    const u32 target = !split || i < 2 ? static_cast<u32>(dest) + i : second_dest + (i - 2);
+                    emit(0x5c98000000000000ULL | predicate | target | (u64{15} << 39) | (u64{250 + i} << 20));
+                }
                 break;
             }
             // Bit 76: a texel offset after the coordinates (x, y in Ra, Ra+1, offsets in Rb, as
