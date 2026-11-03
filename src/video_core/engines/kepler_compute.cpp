@@ -546,6 +546,10 @@ bool KeplerCompute::DispatchNativeCompute(const NativeQmdScheduler::Descriptor& 
     }
     if (!launch_description.block_dim_x || !launch_description.block_dim_y || !launch_description.block_dim_z)
         return false;
+    const u64 program = (u64{qmd[49] & 0x1ffff} << 32) | qmd[48];
+    if (tensor_programs.contains(program)) {
+        return UpscaleInsteadOfNativeProgram();
+    }
     try {
         rasterizer->DispatchCompute();
     } catch (const Shader::Exception& error) {
@@ -554,6 +558,7 @@ bool KeplerCompute::DispatchNativeCompute(const NativeQmdScheduler::Descriptor& 
             LOG_ERROR(HW_GPU, "Native compute shader rejected: {}", error.what());
         }
         if (std::string_view{error.what()}.find("matrix multiply") != std::string_view::npos) {
+            tensor_programs.insert(program);
             DescribeNativeResources(qmd);
             // The console runs this on tensor cores; stand in with a plain upscale of its input.
             return UpscaleInsteadOfNativeProgram();

@@ -141,7 +141,12 @@ struct GPU::Impl {
 
     void WaitForSyncOperation(const u64 fence) {
         std::unique_lock lck{sync_request_mutex};
-        sync_request_cv.wait(lck, [this, fence] { return CurrentSyncRequestFence() >= fence; });
+        // No thread runs the operation after the GPU threads stop, and a core waiting here would
+        // keep the emulation from stopping.
+        sync_request_cv.wait(lck, [this, fence] {
+            return CurrentSyncRequestFence() >= fence ||
+                   shutting_down.load(std::memory_order_relaxed);
+        });
     }
 
     void WaitForIdle() {
@@ -186,6 +191,10 @@ struct GPU::Impl {
         std::unique_lock lk{sync_mutex};
         shutting_down.store(true, std::memory_order::relaxed);
         sync_cv.notify_all();
+        lk.unlock();
+        // Taking the lock first makes a thread between its check and its wait get this wake.
+        { std::scoped_lock request_lock{sync_request_mutex}; }
+        sync_request_cv.notify_all();
     }
 
     /// Obtain the CPU Context
@@ -232,6 +241,7 @@ struct GPU::Impl {
                      raster_area.start_address, raster_area.end_address,
                      reads.load(std::memory_order_relaxed));
         }
+        // A copy: a wait that ends at shutdown leaves this operation in the queue.
         const u64 fence = RequestSyncOperation([this, raster_area]() {
             // Apply collected guest writes before downloading GPU data over guest memory.
             InvalidateGPUCache();
@@ -337,6 +347,13 @@ struct GPU::Impl {
     // previous members has been destroyed
     VideoCommon::GPUThread::ThreadManager gpu_thread;
 
+    // Declared before the renderer so they are destroyed after it: tearing the renderer down still
+    // submits work, and that marks the bound channel's Maxwell3D state dirty.
+    Tegra::Control::Scheduler scheduler;
+    ::Common::unordered_map<s32, std::shared_ptr<Tegra::Control::ChannelState>> channels;
+    Tegra::Control::ChannelState* current_channel;
+    s32 bound_channel{-1};
+
     std::unique_ptr<VideoCore::RendererBase> renderer;
     const bool use_nvdec;
 
@@ -364,11 +381,6 @@ struct GPU::Impl {
     const bool is_async;
 
     std::unique_ptr<Core::Frontend::GraphicsContext> cpu_context;
-
-    Tegra::Control::Scheduler scheduler;
-    ::Common::unordered_map<s32, std::shared_ptr<Tegra::Control::ChannelState>> channels;
-    Tegra::Control::ChannelState* current_channel;
-    s32 bound_channel{-1};
 
     std::deque<size_t> free_swap_counters;
     std::deque<size_t> request_swap_counters;

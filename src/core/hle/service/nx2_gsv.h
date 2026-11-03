@@ -210,6 +210,7 @@ private:
     struct SlotRequest {
         u32 syncpoint{};
         std::atomic<bool> pending{};
+        u64 generation{}; ///< Bumped by each request, under SharedState::mutex
         Tegra::Host1x::SyncpointManager::ActionHandle handle{};
     };
 
@@ -241,20 +242,28 @@ private:
         }
         auto& request = m_requests[slot];
         Cancel(request);
-        // A new request starts unsignalled. Slots are reused by different client objects: title 1's
-        // movie player got slot 0 after NVN's fence waits had left it signalled, took that as a
-        // decoded frame and aborted when the decoder had none.
-        event->Clear(system.Kernel());
-        request.syncpoint = syncpoint;
-        request.pending = true;
+        u64 generation{};
+        {
+            // A new request starts unsignalled. Slots are reused by different client objects:
+            // title 1's movie player got slot 0 after NVN's fence waits had left it signalled,
+            // took that as a decoded frame and aborted when the decoder had none. The previous
+            // request's action may be between pending = false and its Signal: taking the mutex
+            // here orders that signal before this Clear, and the generation would drop it if an
+            // old action ever ran later.
+            std::scoped_lock lk{m_shared->mutex};
+            generation = ++request.generation;
+            event->Clear(system.Kernel());
+            request.syncpoint = syncpoint;
+            request.pending = true;
+        }
         auto& manager = system.Host1x().GetSyncpointManager();
         // The action runs on the GPU thread under the manager's lock, or inline if the value is
-        // already reached.
+        // already reached (so the mutex is not held here).
         request.handle = manager.RegisterGuestAction(
             syncpoint, static_cast<u32>(value),
-            [shared = m_shared, &kernel = system.Kernel(), &request, event] {
+            [shared = m_shared, &kernel = system.Kernel(), &request, event, generation] {
                 std::scoped_lock lk{shared->mutex};
-                if (!shared->alive) {
+                if (!shared->alive || request.generation != generation) {
                     return;
                 }
                 request.pending = false;
@@ -3399,6 +3408,32 @@ private:
         rb.PushCopyObjects(ctx, m_syncpt_events[1]->GetReadableEvent());
     }
 
+    static bool SyncptValuesFirst() {
+        static const bool values_first = [] {
+            const char* value = std::getenv("EDEN_NX2_SYNCPT_VALUES_FIRST");
+            return value != nullptr && value[0] == '1';
+        }();
+        return values_first;
+    }
+
+    // Test only: EDEN_NX2_SYNCPT_POLL_DELAY_US=<us> (at most 400, under the poll interval) holds
+    // each poll that long between its two reads, to widen the window PollSyncpts describes. It
+    // needs multicore, where the poll runs on the HostTiming thread, and delays every wait it
+    // answers, so frame times from such a run mean nothing.
+    static void SyncptPollTestDelay() {
+        static const u32 delay_us = [] {
+            const char* value = std::getenv("EDEN_NX2_SYNCPT_POLL_DELAY_US");
+            const unsigned long parsed = value != nullptr ? std::strtoul(value, nullptr, 10) : 0;
+            return static_cast<u32>((std::min)(parsed, 400UL));
+        }();
+        if (delay_us == 0) [[likely]] {
+            return;
+        }
+        const auto until = std::chrono::steady_clock::now() + std::chrono::microseconds{delay_us};
+        while (std::chrono::steady_clock::now() < until) {
+        }
+    }
+
     // Mirrors Eden's guest syncpoint values into the shared RO page. Returns true if any changed.
     bool UpdateSyncptValues() {
         auto& manager = system.Host1x().GetSyncpointManager();
@@ -3417,23 +3452,40 @@ private:
     // Answers every armed wait: the value page is current, so the client rechecks its threshold
     // and rearms if it still has to wait. Acknowledging without a value change costs the client a
     // wakeup per poll, which keeps waits whose syncpoint we never see from hanging.
+    // The armed bits are read before the values, so every answer carries values read after the
+    // wait was armed; a wait armed later is answered by the next poll. The other way round, a
+    // wait armed between the two reads got values from before it: title 1's movie player arms
+    // right after its slot event fires, takes the miss as fatal and aborted (2162-0001) about
+    // once per two minutes of its 640x360 movie. EDEN_NX2_SYNCPT_VALUES_FIRST=1 reads the values
+    // first, as before.
     void PollSyncpts() {
         if (m_syncpt_memory == nullptr) {
             return;
         }
-        UpdateSyncptValues();
-        bool acked = false;
+        if (SyncptValuesFirst()) {
+            UpdateSyncptValues();
+            SyncptPollTestDelay();
+        }
         const u32 words = (m_syncpt_count + 63) / 64;
+        std::array<u64, 0x40> armed{};
         for (u32 w = 0; w < words; ++w) {
-            const u64 rw_bits = m_syncpt_memory->Read64(m_syncpt_rw + SyncptRwBitsOffset + w * 8);
+            armed[w] = m_syncpt_memory->Read64(m_syncpt_rw + SyncptRwBitsOffset + w * 8);
+        }
+        const u64 armed_summary = m_syncpt_memory->Read64(m_syncpt_rw + SyncptRwSummaryOffset);
+        if (!SyncptValuesFirst()) {
+            SyncptPollTestDelay();
+            std::atomic_thread_fence(std::memory_order_seq_cst);
+            UpdateSyncptValues();
+        }
+        bool acked = false;
+        for (u32 w = 0; w < words; ++w) {
             const u64 ro_address = m_syncpt_ro + SyncptRoBitsOffset + w * 8;
-            if (m_syncpt_memory->Read64(ro_address) != rw_bits) {
-                m_syncpt_memory->Write64(ro_address, rw_bits);
+            if (m_syncpt_memory->Read64(ro_address) != armed[w]) {
+                m_syncpt_memory->Write64(ro_address, armed[w]);
                 acked = true;
             }
         }
-        m_syncpt_memory->Write64(m_syncpt_ro + SyncptRoSummaryOffset,
-                                 m_syncpt_memory->Read64(m_syncpt_rw + SyncptRwSummaryOffset));
+        m_syncpt_memory->Write64(m_syncpt_ro + SyncptRoSummaryOffset, armed_summary);
         if (acked) {
             m_syncpt_events[1]->Signal(system.Kernel());
         }

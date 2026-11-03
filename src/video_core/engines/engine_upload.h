@@ -82,6 +82,8 @@ private:
     void ProcessData(std::span<const u8> read_buffer);
 
     bool native_partial{};
+    /// The upload's size was impossible (garbage commands): its data is dropped.
+    bool rejected{};
     u32 flushed_offset{};
     u32 write_offset = 0;
     u32 copy_size = 0;

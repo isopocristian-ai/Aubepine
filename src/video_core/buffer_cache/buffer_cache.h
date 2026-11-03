@@ -7,6 +7,7 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
 #include <memory>
 #include <numeric>
 #include <stdexcept>
@@ -1582,9 +1583,18 @@ void BufferCache<P>::UpdateVertexBuffer(u32 index) {
     const auto& limit = maxwell3d->regs.vertex_stream_limits[index];
     const GPUVAddr gpu_addr_begin = array.Address();
     const bool native = maxwell3d->GetNativeMacroEngine().native_turing;
-    const u64 native_size = native ? maxwell3d->regs.NativeVertexStreamSize(index) : 0;
-    if (native && array.enable != 0 && native_size > (std::numeric_limits<u32>::max)()) {
-        throw std::runtime_error("Native vertex stream exceeds supported 32-bit buffer size");
+    u64 native_size = native ? maxwell3d->regs.NativeVertexStreamSize(index) : 0;
+    if (native && array.enable != 0 && native_size > (std::numeric_limits<u32>::max)()) [[unlikely]] {
+        // Garbage commands can set this. Throwing here aborted the emulator from the GPU thread;
+        // clamp like Maxwell3D::GetMaxCurrentVertices, and MaxContinuousRange bounds it below.
+        static std::atomic<u32> reported{};
+        if (reported.fetch_add(1, std::memory_order_relaxed) < 16) {
+            const std::size_t method = 0x600 / sizeof(u32) + index * 2;
+            LOG_WARNING(HW_GPU, "Vertex stream {} size words {:#010x} {:#010x} exceed 4 GiB, clamping",
+                        index, maxwell3d->regs.reg_array[method],
+                        maxwell3d->regs.reg_array[method + 1]);
+        }
+        native_size = (std::numeric_limits<u32>::max)();
     }
     const GPUVAddr gpu_addr_end = native ? gpu_addr_begin + native_size : limit.Address() + 1;
     const std::optional<DAddr> device_addr = gpu_memory->GpuToCpuAddress(gpu_addr_begin);

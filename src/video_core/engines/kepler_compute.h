@@ -12,6 +12,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <unordered_set>
 #include <vector>
 #include "common/bit_field.h"
 #include "common/common_funcs.h"
@@ -268,6 +269,13 @@ private:
     void DescribeNativeResources(const NativeQmdScheduler::Descriptor& qmd);
     void RememberDlssMotionVectors();
     bool UpscaleInsteadOfNativeProgram();
+
+    /// Programs rejected for their tensor-core matrix multiplies (by code address). The shader
+    /// cache throws only on a program's first dispatch and skips it silently after, so the
+    /// upscale stand-in runs for each later dispatch from here (Kirby Air Riders' frame stayed
+    /// the output's clear colour, white, after the first four frames). From Selevet Eglantine
+    /// performance build 6 (c3aa97d95).
+    std::unordered_set<u64> tensor_programs;
 
     /// Motion vectors and depth of Fire Emblem: Fortune's Weave's DLSS evaluation, from its first
     /// pass (run earlier in the frame than the network pass the stand-in replaces), with the input
