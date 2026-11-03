@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <chrono>
 #include <algorithm>
 #include <cstring>
 #include <functional>
@@ -116,6 +117,14 @@ bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) try {
             return false;
         }
         const ShaderInfo* shader_info{TryGet(*cpu_shader_addr)};
+        if (!shader_info && native && CaptureRetries().contains(*cpu_shader_addr) &&
+            std::chrono::steady_clock::now() - CaptureRetries()[*cpu_shader_addr].last <
+                std::chrono::milliseconds{100}) {
+            // Still uploading, tried less than 100 ms ago: skip the draw without capturing again.
+            maxwell3d->GetNativeMacroEngine().native_execution_failed = true;
+            last_shaders_valid = false;
+            return false;
+        }
         if (!shader_info && native && IsRejected(*cpu_shader_addr)) {
             // A rejected program fails the same way every time it is bound: skip its draws
             // without rethrowing (two C++ throws each time cost ~1-2% of the GPU thread).
@@ -137,7 +146,29 @@ bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) try {
                                         {},
                                         native_tensor_full_by_default};
                 shader_info = MakeShaderInfo(env, *cpu_shader_addr);
-            } catch (const Shader::Exception&) {
+                if (native && CaptureRetries().erase(*cpu_shader_addr) != 0) {
+                    LOG_INFO(HW_GPU, "Native program {:#x} captured after earlier incomplete reads",
+                             shader_addr);
+                }
+            } catch (const Shader::Exception& error) {
+                // A program the game is still uploading reads as zeros or runs into other data
+                // (Yoshi docked streams shaders in): try it again at most every 100 ms for a
+                // minute instead of rejecting it for good.
+                const std::string_view what{error.what()};
+                const bool incomplete =
+                    native && (what.find("outside capture bounds") != std::string_view::npos ||
+                               what.find("[op 000 00000000 00000000") != std::string_view::npos);
+                const auto now = std::chrono::steady_clock::now();
+                auto& retry = CaptureRetries()[*cpu_shader_addr];
+                if (retry.first == std::chrono::steady_clock::time_point{}) {
+                    retry.first = now;
+                }
+                retry.last = now;
+                if (incomplete && now - retry.first < std::chrono::seconds{60}) {
+                    maxwell3d->GetNativeMacroEngine().native_execution_failed = true;
+                    last_shaders_valid = false;
+                    return false;
+                }
                 RememberRejection(*cpu_shader_addr);
                 // Once per program: which stage slot it is bound to, its header and the slot's
                 // registers (to tell how a pipeline with task/mesh programs is set up).
@@ -224,6 +255,12 @@ void ShaderCache::RethrowIfRejected(VAddr addr) {
 bool ShaderCache::IsRejected(VAddr addr) {
     std::scoped_lock lock{rejected_mutex};
     return rejected_native.contains(addr);
+}
+
+// Failed captures of programs that may still be uploading, per program address.
+std::unordered_map<VAddr, ShaderCache::CaptureRetry>& ShaderCache::CaptureRetries() {
+    static std::unordered_map<VAddr, CaptureRetry> retries;
+    return retries;
 }
 
 void ShaderCache::RememberRejection(VAddr addr) {

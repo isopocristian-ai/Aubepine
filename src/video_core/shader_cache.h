@@ -6,6 +6,9 @@
 
 #pragma once
 
+#include <chrono>
+#include <unordered_map>
+
 #include <array>
 #include <atomic>
 #include <exception>
@@ -161,6 +164,11 @@ private:
     bool IsRejected(VAddr addr);
     /// Remembers the exception being handled as this address's rejection.
     void RememberRejection(VAddr addr);
+    struct CaptureRetry {
+        std::chrono::steady_clock::time_point first{};
+        std::chrono::steady_clock::time_point last{};
+    };
+    static std::unordered_map<VAddr, CaptureRetry>& CaptureRetries();
     /// Hash of the state task and mesh programs are translated with.
     u64 MeshStateHash() const;
 
