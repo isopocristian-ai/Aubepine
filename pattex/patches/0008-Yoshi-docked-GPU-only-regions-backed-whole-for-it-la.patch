@@ -1,0 +1,363 @@
+From 1a6571aefdd84c31c0f90f74083c578a82e2f420 Mon Sep 17 00:00:00 2001
+From: pattex67 <33281022+pattex67@users.noreply.github.com>
+Date: Tue, 3 Nov 2026 23:54:23 +0100
+Subject: [PATCH] Yoshi docked: GPU-only regions backed whole for it (lazy
+ backing made two shaders read as zeros and the game abort); PR #345 block id
+ overflow fix; TLD4.B 0x364, 0xf63 with an offset, SURED any operation
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ README.md                                     | 11 ++--
+ pattex/README.md                              |  5 +-
+ src/common/page_table.h                       | 12 ++++
+ src/core/hle/service/nx2_gsv.h                | 12 +++-
+ src/core/memory.cpp                           | 58 +++++++++++++++++--
+ .../frontend/ampere/lower_to_maxwell.h        | 38 ++++++++++--
+ src/tests/CMakeLists.txt                      |  1 +
+ src/tests/common/page_table.cpp               | 27 +++++++++
+ 8 files changed, 141 insertions(+), 23 deletions(-)
+ create mode 100644 src/tests/common/page_table.cpp
+
+diff --git a/README.md b/README.md
+index 5754c5f32..04f05461b 100644
+--- a/README.md
++++ b/README.md
+@@ -34,9 +34,9 @@ on games that did not run elsewhere.</h4>
+   through `hwopus` 100) with real Opus decoding, the Switch 2 sound mixer streams played through the
+   audio output, and about fifteen more Ampere shader forms. It still needs a small game patch for its
+   window check, see [pattex/README.md](pattex/README.md#star-fox-window-patch).
+-- **Yoshi and the Mysterious Book**: title and intro run at 60 FPS (surface operations on texel
+-  buffers, `SUATOM`, array gathers and a few integer forms), but it does not get into the game yet:
+-  in docked mode it stops after the intro movie (see the table below).
++- **Yoshi and the Mysterious Book** gets into the game in docked mode (surface operations on texel
++  buffers, `SUATOM`, array gathers, a few integer forms, and its GPU-only memory backed whole); only
++  tested up to the first chapter map.
+ - **Kirby Air Riders**: menus, races and results render (Selevet's white-frame fixes and new shader
+   forms); fewer rejected shaders than upstream.
+ - **Mario Kart World**: Nemyu's fixes for the 2162-0001 title-screen abort and its stability guards,
+@@ -51,7 +51,7 @@ Tested on Windows 11, Ryzen 7 9800X3D and Radeon RX 9070 XT, in short sessions.
+ | Game | State |
+ |---|---|
+ | Star Fox | Title, intro cutscenes, training mission, sound; no rejected shaders (needs the window patch). |
+-| Yoshi and the Mysterious Book | Title and intro cutscene at 60 FPS, but **does not get into the game yet**: in docked mode it stops right after the Bowser Jr. intro movie (abort 2162-0001; GPU-only memory backed as written makes two shaders read as zeros). Being worked on. |
++| Yoshi and the Mysterious Book | Title, intro and the first chapter map in docked mode, 43-60 FPS (GPU-only memory backed whole for this game: backed as written, two shaders read as zeros and it aborted after the intro). Still 10 rejected shaders; tested only up to the chapter 1 map. |
+ | Mario Kart World | Title, tour movie, races at ~40-45 FPS; no rejected shaders. |
+ | Donkey Kong Bananza | Saves load and play; no rejected shaders. |
+ | Kirby Air Riders | Menus, races and results; race scenery still partly dark; 8 rejected shaders. |
+@@ -90,8 +90,7 @@ Aubépine is licensed under the GPLv3 (or any later version), like Eglantine. Re
+ Il regroupe des correctifs de plusieurs forks et ajoute son propre travail : **Star Fox** démarre et se
+ joue (codec audio matériel du SDK 21, son du nouveau mixeur, nouvelles instructions de shader ; il faut
+ encore un petit patch de jeu, voir [pattex/README.md](pattex/README.md)), **Yoshi et le Livre
+-mystérieux** affiche son écran titre et sa cinématique mais ne va pas encore en jeu (en mode TV il
+-s'arrête après la vidéo de Bowser Jr.), et Kirby, Mario Kart World, DK Bananza et Metroid
++mystérieux** va en jeu en mode TV (testé jusqu'à la carte du premier chapitre), et Kirby, Mario Kart World, DK Bananza et Metroid
+ Prime 4 profitent des correctifs regroupés. Testé sur Windows 11 avec une Radeon RX 9070 XT. Pour
+ compiler, suivre [docs/Build.md](docs/Build.md) sur la branche `pattex`. Ne jouez qu'à des jeux que vous
+ possédez et avez extraits vous-même : aucun fichier de jeu, clé ou firmware n'est fourni.
+diff --git a/pattex/README.md b/pattex/README.md
+index 13123a2ef..9caf89858 100644
+--- a/pattex/README.md
++++ b/pattex/README.md
+@@ -45,7 +45,7 @@ the display then reads the right image with the right layout.
+ | Kirby Air Riders | Menus, races and results render; race scenery still partly dark; 8 rejected shaders. |
+ | Metroid Prime 4 | 60 FPS from loose dumps (RomFS fallback). |
+ | Star Fox | Title, intro cutscenes, training mission, sound; no rejected shaders (needs the window patch). |
+-| Yoshi and the Mysterious Book | Title and intro cutscene at 60 FPS, but **does not get into the game yet**: in docked mode it stops right after the Bowser Jr. intro movie (abort 2162-0001; GPU-only memory backed as written makes two shaders read as zeros). Being worked on. |
++| Yoshi and the Mysterious Book | Title, intro and the first chapter map in docked mode, 43-60 FPS (GPU-only memory backed whole for this game: backed as written, two shaders read as zeros and it aborted after the intro). Still 10 rejected shaders; tested only up to the chapter 1 map. |
+ 
+ ## Credits
+ 
+@@ -60,7 +60,6 @@ as Eglantine.
+ Aubépine réunit PokeDinner, Eglantine nx2 (build 174 + #374), des correctifs repris d'autres
+ forks (Nemyu, Selevet, MythosOfs) et notre travail pour faire tourner **Star Fox** (codec audio matériel
+ `hwacod`, sortie son sysmix, une quinzaine d'instructions de shader) et **Yoshi et le Livre mystérieux**
+-(écran titre et cinématique, mais pas encore en jeu : en mode TV il s'arrête après la vidéo
+-d'introduction). Les patchs sont dans `patches/`, le patch de fenêtre de Star Fox dans
++(va en jeu en mode TV, testé jusqu'à la carte du premier chapitre). Les patchs sont dans `patches/`, le patch de fenêtre de Star Fox dans
+ `star-fox/` (à copier dans le dossier `load` d'Eglantine). Travail fait avec un assistant IA
+ (Claude Opus 5.5), testé en sessions courtes sur Windows 11 avec une Radeon RX 9070 XT.
+diff --git a/src/common/page_table.h b/src/common/page_table.h
+index a21fe5311..78fd609f7 100644
+--- a/src/common/page_table.h
++++ b/src/common/page_table.h
+@@ -7,6 +7,7 @@
+ #pragma once
+ 
+ #include <atomic>
++#include <limits>
+ 
+ #include "common/common_types.h"
+ #include "common/sparse_large_vector.h"
+@@ -56,6 +57,17 @@ struct PageTable {
+      */
+     class PageEntryData {
+     public:
++        // Reserved when mapping ids are exhausted; this id cannot prove span continuity.
++        static constexpr u16 INVALID_BLOCK_ID = (std::numeric_limits<u16>::max)();
++
++        [[nodiscard]] static constexpr u16 BlockIdForMapping(u64 mapping_id) noexcept {
++            return mapping_id < INVALID_BLOCK_ID ? static_cast<u16>(mapping_id) : INVALID_BLOCK_ID;
++        }
++
++        [[nodiscard]] static constexpr bool CanFastSpan(u16 first, u16 last) noexcept {
++            return first != INVALID_BLOCK_ID && first == last;
++        }
++
+         struct Data {
+             Data(bool marked_, PageType type_, u16 block_, u64 page_)
+                 : marked(static_cast<u64>(marked_)       & 0b1)
+diff --git a/src/core/hle/service/nx2_gsv.h b/src/core/hle/service/nx2_gsv.h
+index 9b12bc09f..0c47f323d 100644
+--- a/src/core/hle/service/nx2_gsv.h
++++ b/src/core/hle/service/nx2_gsv.h
+@@ -1029,12 +1029,18 @@ private:
+     }
+ 
+     // EDEN_NX2_GPU_ONLY_LAZY=0 backs GPU-only regions whole, as before.
++    // Yoshi and the Mysterious Book docked: with its large regions backed as written, two of its
++    // shaders read as zeros right after the intro movie and the game aborts (2162-0001); backed
++    // whole it plays. EDEN_NX2_GPU_ONLY_LAZY=1 turns lazy backing back on for it too.
+     static bool LazyGpuOnlyRegions() {
+-        static const bool lazy = [] {
++        static const int forced = [] {
+             const char* value = std::getenv("EDEN_NX2_GPU_ONLY_LAZY");
+-            return value == nullptr || value[0] != '0';
++            return value == nullptr ? -1 : (value[0] != '0' ? 1 : 0);
+         }();
+-        return lazy;
++        if (forced >= 0) {
++            return forced == 1;
++        }
++        return Tegra::g_nx2_program_id.load(std::memory_order_relaxed) != 0x0400245021D2C000ULL;
+     }
+ 
+     // EDEN_NX2_GPU_ONLY_LAZY_MIN=<MiB>: GPU-only regions smaller than that are backed whole even
+diff --git a/src/core/memory.cpp b/src/core/memory.cpp
+index fe56f7b5b..12a7ccb22 100644
+--- a/src/core/memory.cpp
++++ b/src/core/memory.cpp
+@@ -7,6 +7,7 @@
+ 
+ #include <atomic>
+ #include <algorithm>
++#include <cstdint>
+ #include <cstring>
+ #include <cstdlib>
+ #include <mutex>
+@@ -349,10 +350,28 @@ struct Memory::Impl {
+     }
+ 
+     [[nodiscard]] inline const u8* GetSpan(const VAddr addr, const std::size_t size) const noexcept {
+-        return (current_page_table->entries[addr >> YUZU_PAGEBITS].Block() == current_page_table->entries[(addr + size) >> YUZU_PAGEBITS].Block()) ? GetPointerSilent(addr) : nullptr;
++        const auto first = current_page_table->entries[addr >> YUZU_PAGEBITS].Block();
++        const auto last = current_page_table->entries[(addr + size) >> YUZU_PAGEBITS].Block();
++        if (Common::PageTable::PageEntryData::CanFastSpan(first, last)) {
++            return GetPointerSilent(addr);
++        }
++        if (first != Common::PageTable::PageEntryData::INVALID_BLOCK_ID &&
++            last != Common::PageTable::PageEntryData::INVALID_BLOCK_ID) {
++            return nullptr;
++        }
++        return GetContiguousSpan(addr, size);
+     }
+     [[nodiscard]] inline u8* GetSpan(const VAddr addr, const std::size_t size) noexcept {
+-        return (current_page_table->entries[addr >> YUZU_PAGEBITS].Block() == current_page_table->entries[(addr + size) >> YUZU_PAGEBITS].Block()) ? GetPointerSilent(addr) : nullptr;
++        const auto first = current_page_table->entries[addr >> YUZU_PAGEBITS].Block();
++        const auto last = current_page_table->entries[(addr + size) >> YUZU_PAGEBITS].Block();
++        if (Common::PageTable::PageEntryData::CanFastSpan(first, last)) {
++            return GetPointerSilent(addr);
++        }
++        if (first != Common::PageTable::PageEntryData::INVALID_BLOCK_ID &&
++            last != Common::PageTable::PageEntryData::INVALID_BLOCK_ID) {
++            return nullptr;
++        }
++        return GetContiguousSpan(addr, size);
+     }
+ 
+     bool WriteBlockImpl(const Common::ProcessAddress addr, const void* buffer, const std::size_t size, bool unsafe) {
+@@ -689,8 +708,19 @@ struct Memory::Impl {
+ 
+             page_table.entries.ZeroRegion(base, end);
+         } else {
+-            auto current_block = block_count.fetch_add(1, std::memory_order_relaxed);
+-            ASSERT(current_block != 65535);
++            u64 mapping_id = block_count.load(std::memory_order_relaxed);
++            constexpr u64 exhausted_count =
++                u64{Common::PageTable::PageEntryData::INVALID_BLOCK_ID} + 1;
++            while (mapping_id < exhausted_count &&
++                   !block_count.compare_exchange_weak(mapping_id, mapping_id + 1,
++                                                      std::memory_order_relaxed)) {
++            }
++            const u16 current_block =
++                Common::PageTable::PageEntryData::BlockIdForMapping(mapping_id);
++            if (mapping_id == Common::PageTable::PageEntryData::INVALID_BLOCK_ID) {
++                LOG_WARNING(HW_Memory,
++                            "Page table block ids are exhausted; validating spans page by page");
++            }
+ 
+             page_table.entries.CommitRegion(base, end);
+             while (base != end) {
+@@ -757,6 +787,24 @@ struct Memory::Impl {
+             GetInteger(vaddr), []() {}, []() {});
+     }
+ 
++    [[nodiscard]] u8* GetContiguousSpan(VAddr addr, std::size_t size) const noexcept {
++        u8* const base = GetPointerSilent(addr);
++        if (base == nullptr) {
++            return nullptr;
++        }
++
++        const VAddr end = addr + size;
++        const VAddr first_page = ((addr >> YUZU_PAGEBITS) + 1) << YUZU_PAGEBITS;
++        const std::uintptr_t base_ptr = reinterpret_cast<std::uintptr_t>(base);
++        for (VAddr page = first_page; page < end; page += YUZU_PAGESIZE) {
++            const std::uintptr_t expected = base_ptr + (page - addr);
++            if (reinterpret_cast<std::uintptr_t>(GetPointerSilent(page)) != expected) {
++                return nullptr;
++            }
++        }
++        return base;
++    }
++
+     /// @brief Reads a particular data type out of memory at the given virtual address.
+     /// @param vaddr The virtual address to read the data type from.
+     /// @tparam T The data type to read out of memory.
+@@ -947,7 +995,7 @@ struct Memory::Impl {
+ #else
+     Common::HostMemory* host_buffer{};
+ #endif
+-    std::atomic<u16> block_count = 0;
++    std::atomic<u64> block_count = 0;
+ };
+ 
+ Memory::Memory(Core::System& system_) : system{system_} {
+diff --git a/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h b/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
+index 132436d8b..60fd4da2e 100644
+--- a/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
++++ b/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
+@@ -1237,7 +1237,9 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+             const u32 binding = insn.Bits(54, 5), offset = insn.Bits(40, 14);
+             const u32 data = insn.Bits(32, 8), coordinate = insn.Bits(24, 8);
+             const u32 dimension = insn.Bits(61, 3); // Maxwell's codes: 3 = 2D, 4 = 2D_ARRAY, 5 = 3D
+-            if (insn.words[2] != 0x0010e000 || dimension > 5 || binding >= 18 ||
++            // The operation is at 87-90 (Yoshi docked uses OR), as Maxwell SURED's bits 24-26.
++            const u32 operation = insn.Bits(87, 4);
++            if ((insn.words[2] & ~(0xfU << 23)) != 0x0010e000 || operation > 7 || dimension > 5 || binding >= 18 ||
+                 offset > 0x1fff || insn.Bits(59, 2) || coordinate > (dimension >= 4 ? 252U : 253U))
+                 return fail(index, "native surface reduction mode");
+             if (result.required_texture_buffer != ~0U && result.required_texture_buffer != binding)
+@@ -1246,7 +1248,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+             // Maxwell SURED (as the frontend decodes it): operand 0-7, coordinates 8-15, ADD and
+             // U32 are zero at 24 and 20, type 33 (3 = 2D), bound offset 36, bound 51.
+             emit(0xeb40000000000000ULL | predicate | data | (u64{coordinate} << 8) |
+-                (u64{dimension} << 33) | (u64{offset} << 36) | (u64{1} << 51));
++                (u64{operation} << 24) | (u64{dimension} << 33) | (u64{offset} << 36) | (u64{1} << 51));
+             break;
+         }
+         case 0x301: // BREV register.
+@@ -1964,6 +1966,27 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+             }
+             break;
+         }
++        case 0x364: { // TLD4.B, 2D without offsets or depth compare: (x, y | handle), as 0x361 packs TEX.B (Yoshi docked).
++            const u32 mask = insn.Bits(72, 4), second_dest = insn.Bits(64, 8);
++            const u32 source_a = insn.Bits(24, 8), source_b = insn.Bits(32, 8);
++            const u32 components = static_cast<u32>(std::popcount(mask));
++            if (insn.Bits(61, 3) != 1 || insn.Bits(59, 2) != 3 || insn.Bits(40, 19) || insn.Bits(76, 5) ||
++                insn.Bits(81, 3) != 7 || insn.Bits(89, 1) || insn.Bits(91, 1) || mask == 0 ||
++                source_a == 255 || source_a + 1 >= 246 || source_b >= 246 || dest == 255)
++                return fail(index, "native bindless texture gather mode");
++            emit(0x5c98000000000000ULL | predicate | 250 | (u64{15} << 39) | (u64{source_a} << 20));
++            emit(0x5c98000000000000ULL | predicate | 251 | (u64{15} << 39) | (u64{source_a + 1} << 20));
++            emit(0x5c98000000000000ULL | predicate | 246 | (u64{15} << 39) | (u64{source_b} << 20));
++            emit(0xdec0000000000000ULL | predicate | 250 | (u64{250} << 8) | (u64{246} << 20) |
++                 (u64{2} << 28) | (u64{mask} << 31) | (u64{insn.Bits(87, 2)} << 38) |
++                 (u64{insn.Bits(90, 1)} << 49) | (u64{7} << 51));
++            const bool split = second_dest != 255;
++            for (u32 i = 0; i < components; ++i) {
++                const u32 target = !split || i < 2 ? static_cast<u32>(dest) + i : second_dest + (i - 2);
++                emit(0x5c98000000000000ULL | predicate | target | (u64{15} << 39) | (u64{250 + i} << 20));
++            }
++            break;
++        }
+         case 0xb63: case 0xf63: { // TLD4 (gather), 2D without offsets or depth compare; component at bits 87-88.
+             // 0xf63: the handle in a uniform register (bit 91), Maxwell TLD4.B with the handle in Rb.
+             const bool bindless = opcode == 0xf63;
+@@ -2034,7 +2057,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+             // for TEX); Maxwell TLD4 takes it as AOFFI (bits 54-55) from Rb.
+             const bool offsets = insn.Bits(76, 1) != 0;
+             if (insn.Bits(61, 3) != 1 || insn.Bits(77, 3) || insn.Bits(81, 3) != 7 || insn.Bits(59, 1) ||
+-                (offsets && (bindless || source_b == 255 || (source_a != 255 && source_a >= 245))) ||
++                (offsets && (source_b == 255 || source_b >= 246 || (source_a != 255 && source_a >= 245))) ||
+                 insn.Bits(89, 1) || mask == 0 ||
+                 (bindless ? (handle >= 246 || insn.Bits(46, 13) || !insn.Bits(91, 1))
+                           : (insn.Bits(40, 14) > 0x1fff || binding >= 18 ||
+@@ -2046,14 +2069,17 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+             const u32 y = !offsets ? source_b : source_a == 255 ? 255U : source_a + 1;
+             emit(0x5c98000000000000ULL | predicate | 250 | (u64{15} << 39) | (u64{source_a} << 20));
+             emit(0x5c98000000000000ULL | predicate | 251 | (u64{15} << 39) | (u64{y} << 20));
++            // The meta registers: TLD4 takes the offset first, TLD4.B the handle and then the offset
++            // (Yoshi docked gathers with an offset through a uniform handle).
+             if (offsets) {
+-                emit(0x5c98000000000000ULL | predicate | 246 | (u64{15} << 39) | (u64{source_b} << 20));
++                emit(0x5c98000000000000ULL | predicate | (bindless ? 247 : 246) | (u64{15} << 39) |
++                     (u64{source_b} << 20));
+             }
+             if (bindless) {
+                 emit(0x5c98000000000000ULL | predicate | 246 | (u64{15} << 39) | (u64{handle} << 20));
+                 emit(0xdec0000000000000ULL | predicate | 250 | (u64{250} << 8) | (u64{246} << 20) |
+-                     (u64{2} << 28) | (u64{mask} << 31) | (u64{insn.Bits(87, 2)} << 38) |
+-                     (u64{insn.Bits(90, 1)} << 49) | (u64{7} << 51));
++                     (u64{2} << 28) | (u64{mask} << 31) | (u64{offsets ? 1U : 0U} << 36) |
++                     (u64{insn.Bits(87, 2)} << 38) | (u64{insn.Bits(90, 1)} << 49) | (u64{7} << 51));
+             } else {
+             emit(0xc800000000000000ULL | predicate | 250 | (u64{250} << 8) |
+                  (u64{offsets ? 246U : 255U} << 20) | (u64{2} << 28) | (u64{mask} << 31) |
+diff --git a/src/tests/CMakeLists.txt b/src/tests/CMakeLists.txt
+index 6bf14f4cb..22d78716c 100644
+--- a/src/tests/CMakeLists.txt
++++ b/src/tests/CMakeLists.txt
+@@ -11,6 +11,7 @@ add_executable(tests
+     common/fibers.cpp
+     common/game_presets.cpp
+     common/host_memory.cpp
++    common/page_table.cpp
+     common/param_package.cpp
+     common/range_map.cpp
+     common/ring_buffer.cpp
+diff --git a/src/tests/common/page_table.cpp b/src/tests/common/page_table.cpp
+new file mode 100644
+index 000000000..672f14400
+--- /dev/null
++++ b/src/tests/common/page_table.cpp
+@@ -0,0 +1,27 @@
++// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#include <limits>
++
++#include <catch2/catch_test_macros.hpp>
++
++#include "common/page_table.h"
++
++TEST_CASE("Page table block ids do not wrap", "[common]") {
++    using Entry = Common::PageTable::PageEntryData;
++
++    REQUIRE(Entry::BlockIdForMapping(0) == 0);
++    REQUIRE(Entry::BlockIdForMapping(65534) == 65534);
++    REQUIRE(Entry::BlockIdForMapping(65535) == Entry::INVALID_BLOCK_ID);
++    REQUIRE(Entry::BlockIdForMapping(65536) == Entry::INVALID_BLOCK_ID);
++    REQUIRE(Entry::BlockIdForMapping((std::numeric_limits<u64>::max)()) ==
++            Entry::INVALID_BLOCK_ID);
++}
++
++TEST_CASE("Page table fast spans reject exhausted block ids", "[common]") {
++    using Entry = Common::PageTable::PageEntryData;
++
++    REQUIRE(Entry::CanFastSpan(7, 7));
++    REQUIRE_FALSE(Entry::CanFastSpan(7, 8));
++    REQUIRE_FALSE(Entry::CanFastSpan(Entry::INVALID_BLOCK_ID, Entry::INVALID_BLOCK_ID));
++}
+-- 
+2.51.0.windows.1
+

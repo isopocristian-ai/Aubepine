@@ -10,7 +10,7 @@ Every change has been run on the games listed below, but only in short sessions.
 
 ## Patches
 
-`patches/` holds the six commits of this branch on top of PokeDinner master, as `git format-patch`
+`patches/` holds the code commits of this branch on top of PokeDinner master, as `git format-patch`
 files (`git am patches/*.patch` on PokeDinner 216b5034c reproduces the branch):
 
 | Patch | Content |
@@ -21,6 +21,8 @@ files (`git am patches/*.patch` on PokeDinner 216b5034c reproduces the branch):
 | 0004 | **Star Fox (SDK 21.4.4)**: `hwopus` 100 opens the new hardware audio codec (`nn::codec::hwacod`) with real Opus decoding; ULDC 8/16-bit loads; TXD with a uniform-register handle (0xf6c); MythosOfs' chat/camera commands. Also the AMD occlusion-query copy without `WAIT_BIT` (from monkeefunnee, `EDEN_NX2_QUERY_NOWAIT=0` turns it off) and diagnostic switches. |
 | 0005 | **Star Fox**: the Switch 2 sound mixer streams (`audsmx:u` / sysmix) now play through Eden's output instead of being drained silently (ring data at +0x1040, s16 and f32); shader lowering for SUST with any channel mask, SURED on 2D_ARRAY/3D, `SHF.R.S32.HI`, TLD4 on ARRAY_2D, PLOP3 with a second destination. |
 | 0006 | **Yoshi**: SULD/SUST/SURED on texel buffers and 1D images, SUATOM with result (0x593), TLD4.B on ARRAY_2D (0xf63), IMNMX with a wide immediate, `SHF.L.HI` forms, ATOMG with bit 90, I2FP with an immediate. |
+| 0007 | Shows the emulator as **Aubépine** (window title, menus, dialogs, version); hotkey ids and the Qt application name stay. |
+| 0008 | **Yoshi docked**: GPU-only regions backed whole for this game (backed as written, two shaders read as zeros and it aborted after the intro), Eglantine PR #345 (page table block id overflow), TLD4.B 0x364, 0xf63 with an offset, SURED with any operation. |
 
 Patches 0004 to 0006 are this fork's own work and only touch a few files
 (`lower_to_maxwell.h`, `hardware_opus_decoder_manager.*`, `nx2_audio_device_manager.h`); they should
