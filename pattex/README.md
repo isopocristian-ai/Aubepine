@@ -45,7 +45,7 @@ the display then reads the right image with the right layout.
 | Kirby Air Riders | Menus, races and results render; race scenery still partly dark; 8 rejected shaders. |
 | Metroid Prime 4 | 60 FPS from loose dumps (RomFS fallback). |
 | Star Fox | Title, intro cutscenes, training mission, sound; no rejected shaders (needs the window patch). |
-| Yoshi and the Mysterious Book | Title and intro cutscene at 60 FPS, but **does not get into the game yet**: in docked mode it stops right after the Bowser Jr. intro movie (abort 2162-0001; GPU-only memory backed as written makes two shaders read as zeros). Being worked on. |
+| Yoshi and the Mysterious Book | Title, intro and the first chapter map in docked mode, 43-60 FPS (GPU-only memory backed whole for this game: backed as written, two shaders read as zeros and it aborted after the intro). Still 10 rejected shaders; tested only up to the chapter 1 map. |
 
 ## Credits
 
@@ -60,7 +60,6 @@ as Eglantine.
 Aubépine réunit PokeDinner, Eglantine nx2 (build 174 + #374), des correctifs repris d'autres
 forks (Nemyu, Selevet, MythosOfs) et notre travail pour faire tourner **Star Fox** (codec audio matériel
 `hwacod`, sortie son sysmix, une quinzaine d'instructions de shader) et **Yoshi et le Livre mystérieux**
-(écran titre et cinématique, mais pas encore en jeu : en mode TV il s'arrête après la vidéo
-d'introduction). Les patchs sont dans `patches/`, le patch de fenêtre de Star Fox dans
+(va en jeu en mode TV, testé jusqu'à la carte du premier chapitre). Les patchs sont dans `patches/`, le patch de fenêtre de Star Fox dans
 `star-fox/` (à copier dans le dossier `load` d'Eglantine). Travail fait avec un assistant IA
 (Claude Opus 5.5), testé en sessions courtes sur Windows 11 avec une Radeon RX 9070 XT.

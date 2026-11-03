@@ -1029,12 +1029,18 @@ private:
     }
 
     // EDEN_NX2_GPU_ONLY_LAZY=0 backs GPU-only regions whole, as before.
+    // Yoshi and the Mysterious Book docked: with its large regions backed as written, two of its
+    // shaders read as zeros right after the intro movie and the game aborts (2162-0001); backed
+    // whole it plays. EDEN_NX2_GPU_ONLY_LAZY=1 turns lazy backing back on for it too.
     static bool LazyGpuOnlyRegions() {
-        static const bool lazy = [] {
+        static const int forced = [] {
             const char* value = std::getenv("EDEN_NX2_GPU_ONLY_LAZY");
-            return value == nullptr || value[0] != '0';
+            return value == nullptr ? -1 : (value[0] != '0' ? 1 : 0);
         }();
-        return lazy;
+        if (forced >= 0) {
+            return forced == 1;
+        }
+        return Tegra::g_nx2_program_id.load(std::memory_order_relaxed) != 0x0400245021D2C000ULL;
     }
 
     // EDEN_NX2_GPU_ONLY_LAZY_MIN=<MiB>: GPU-only regions smaller than that are backed whole even
