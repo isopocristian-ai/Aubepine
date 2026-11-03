@@ -6,71 +6,90 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 -->
 <!-- lang: en-GB -->
-> **Aubépine (pattex67 fork):** PokeDinner + Eglantine nx2 with fixes from other forks and new work for Star Fox
-> and Yoshi and the Mysterious Book. See [pattex/README.md](pattex/README.md) for the patches, the
-> Star Fox window patch and the games tested.
-
 <h1 align="center">
   <br>
-  <a href="https://git.eden-emu.dev/eden-emu/eden"><img src="https://github.com/user-attachments/assets/35031845-4bfa-4916-8bf5-bc3bce67d5e2" alt="Eglantine" width="200"></a>
-  <br>
-  <b>Eglantine</b>
+  <b>Aubépine</b>
   <br>
 </h1>
 
-<h4 align="center"><b>Eglantine</b> is a free and opensource (FOSS) Switch 2 emulator, derived from Eden, Yuzu and Sudachi - started by developer Camille LaVey.
-It's written in C++ with portability in mind, with builds for Windows, Linux and macOS
-</h4>
+<h4 align="center"><b>Aubépine</b> is an experimental Nintendo Switch 2 emulator: a fork of
+<a href="https://github.com/Djihads80/Eglantine">Eglantine</a> and
+<a href="https://git.eden-emu.dev/Franseven/PokeDinner-a-Eglantine-Fork">PokeDinner</a>
+(both based on Eden, Yuzu and Sudachi), gathering fixes from several forks and adding its own work
+on games that did not run elsewhere.</h4>
 
 <p align="center">
-    </a>
-    <a href="https://discord.gg/jCCZ58VExk">
-        <img src="https://img.shields.io/discord/1367654015269339267?color=5865F2&label=Eglantine&logo=discord&logoColor=white"
-            alt="Discord">
-    </a>
-  
-</p>
-
-<p align="center">
-  <a href="#compatibility">Compatibility</a> |
-  <a href="#development">Development</a> |
+  <a href="#what-it-adds">What it adds</a> |
+  <a href="#games-tested">Games tested</a> |
   <a href="#building">Building</a> |
-  <a href="#download">Download</a> |
-  <a href="#support">Support</a> |
-  <a href="#license">License</a>
+  <a href="#patches">Patches</a> |
+  <a href="#credits">Credits</a> |
+  <a href="#license">License</a> |
+  <a href="#en-français">Français</a>
 </p>
 
-## Compatibility
+## What it adds
 
-The emulator is capable of running Mario Kart World at decent/full speed depending on specs and configurations, and Splatoon Raiders at variable performances
+- **Star Fox** boots and plays (SDK 21.4.4): the new hardware audio codec (`nn::codec::hwacod`, opened
+  through `hwopus` 100) with real Opus decoding, the Switch 2 sound mixer streams played through the
+  audio output, and about fifteen more Ampere shader forms. It still needs a small game patch for its
+  window check, see [pattex/README.md](pattex/README.md#star-fox-window-patch).
+- **Yoshi and the Mysterious Book** runs at 60 FPS with no rejected shaders (surface operations on
+  texel buffers, `SUATOM`, array gathers and a few integer forms).
+- **Kirby Air Riders**: menus, races and results render (Selevet's white-frame fixes and new shader
+  forms); fewer rejected shaders than upstream.
+- **Mario Kart World**: Nemyu's fixes for the 2162-0001 title-screen abort and its stability guards,
+  and the tour movie fixed on AMD GPUs.
+- Metroid Prime 4 loose RomFS dumps load, and several other fixes listed in
+  [pattex/README.md](pattex/README.md).
 
-A list of supported games will be available in future. Please be patient.
+## Games tested
 
-## Development
-For development discussions, please join us on [Discord](https://discord.gg/jCCZ58VExk)
+Tested on Windows 11, Ryzen 7 9800X3D and Radeon RX 9070 XT, in short sessions.
 
-If you would like to contribute, we are open to new developers and pull requests. Please ensure that your work is of a high standard and properly documented. You can also contact any of the developers on Discord or Stoat to learn more about the current state of the emulator.
+| Game | State |
+|---|---|
+| Star Fox | Title, intro cutscenes, training mission, sound; no rejected shaders (needs the window patch). |
+| Yoshi and the Mysterious Book | Title, intro, gameplay at 60 FPS; no rejected shaders. |
+| Mario Kart World | Title, tour movie, races at ~40-45 FPS; no rejected shaders. |
+| Donkey Kong Bananza | Saves load and play; no rejected shaders. |
+| Kirby Air Riders | Menus, races and results; race scenery still partly dark; 8 rejected shaders. |
+| Metroid Prime 4 | 60 FPS from loose dumps. |
 
-## Documentation
-
-We have a user manual! See our [User Handbook](./docs/user/README.md).
+Only play games you own and dumped yourself. No keys, firmware or game files are provided here.
 
 ## Building
 
-See the [General Build Guide](docs/Build.md)
+Follow the [General Build Guide](docs/Build.md); the default branch of this repository is `pattex`.
+There are no prebuilt releases yet.
 
-For information on provided development tooling, see the [Tools directory](./tools)
+## Patches
 
-## Download
+[`pattex/patches/`](pattex/patches) holds every change of this fork as `git format-patch` files on top
+of PokeDinner, with what each one contains in [pattex/README.md](pattex/README.md). The Star Fox and
+Yoshi work (patches 0004 to 0006) touches only a few files and should apply to Eglantine with little
+adjustment.
 
-You can download the latest releases from [here](https://github.com/Djihads80/Eglantine/releases).
+## Credits
 
-## Support
-
-We currently do not take in any donations for the time being
-
-If you would prefer to support us in a different way, please join our [Discord](https://discord.gg/jCCZ58VExk)
+Aubépine stands on the work of the Eden, Yuzu and Sudachi developers, Eglantine (Djihads80 and its
+contributors), PokeDinner (Franseven), Nemyu (Uesleizito Zin), Selevet Eglantine (sylvieistaken),
+MythosOfs and monkeefunnee. The fork's own changes were made with an AI assistant (Claude Opus 5.5).
 
 ## License
 
-Eglantine is licensed under the GPLv3 (or any later version). Refer to the [LICENSE.txt](https://github.com/Djihads80/Eglantine/blob/nx2/LICENSE.txt) file.
+Aubépine is licensed under the GPLv3 (or any later version), like Eglantine. Refer to the
+[LICENSE.txt](LICENSE.txt) file.
+
+---
+
+## En français
+
+**Aubépine** est un émulateur expérimental de la Nintendo Switch 2, fork d'Eglantine et de PokeDinner.
+Il regroupe des correctifs de plusieurs forks et ajoute son propre travail : **Star Fox** démarre et se
+joue (codec audio matériel du SDK 21, son du nouveau mixeur, nouvelles instructions de shader ; il faut
+encore un petit patch de jeu, voir [pattex/README.md](pattex/README.md)), **Yoshi et le Livre
+mystérieux** tourne à 60 FPS sans shader refusé, et Kirby, Mario Kart World, DK Bananza et Metroid
+Prime 4 profitent des correctifs regroupés. Testé sur Windows 11 avec une Radeon RX 9070 XT. Pour
+compiler, suivre [docs/Build.md](docs/Build.md) sur la branche `pattex`. Ne jouez qu'à des jeux que vous
+possédez et avez extraits vous-même : aucun fichier de jeu, clé ou firmware n'est fourni.
