@@ -1,0 +1,247 @@
+From 4f15ac35a7f7bcd5da29f62cf1f80e1fc4ee7bbd Mon Sep 17 00:00:00 2001
+From: pattex67 <33281022+pattex67@users.noreply.github.com>
+Date: Tue, 3 Nov 2026 23:00:52 +0100
+Subject: [PATCH 5/6] Star Fox: sysmix streams to Eden's output; SUST any
+ channel mask, SURED 2D_ARRAY/3D, SHF.R.S32.HI, TLD4 ARRAY_2D, PLOP3 second
+ destination
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../service/audio/nx2_audio_device_manager.h  | 68 +++++++++++++++++--
+ .../frontend/ampere/lower_to_maxwell.h        | 64 ++++++++++++++---
+ 2 files changed, 119 insertions(+), 13 deletions(-)
+
+diff --git a/src/core/hle/service/audio/nx2_audio_device_manager.h b/src/core/hle/service/audio/nx2_audio_device_manager.h
+index 746454660..cf60afdf5 100644
+--- a/src/core/hle/service/audio/nx2_audio_device_manager.h
++++ b/src/core/hle/service/audio/nx2_audio_device_manager.h
+@@ -17,6 +17,9 @@
+ 
+ #include <fmt/ranges.h>
+ 
++#include "audio_core/audio_core.h"
++#include "audio_core/sink/sink.h"
++#include "audio_core/sink/sink_stream.h"
+ #include "common/string_util.h"
+ #include "core/core.h"
+ #include "core/core_timing.h"
+@@ -31,10 +34,11 @@ namespace Service::Audio {
+ // Switch 2 sound mixer streams (nn::audio::sysmix, behind audsmx:u). A stream is a ring buffer in
+ // the game's own memory: CreateStream hands over its address and size (4 KiB aligned), OpenStream
+ // its format and length in frames, and once the streams are engaged the system takes frames out of
+-// the ring at the stream's sample rate. Eden doesn't mix these into its output yet; it drains the
+-// rings in real time so the game sees its audio being played (Switch Sports' menu movie feeds one).
+-// The ring's shared indices, in frames modulo (frame count + 1): the system's read index at
+-// buffer + 0x44, the game's write index at buffer + 0x1004.
++// the ring at the stream's sample rate. The frames taken go to Eden's output (sample types 2, s16,
++// and 5, f32; others are drained silently), so the game sees its audio being played (Switch
++// Sports' menu movie feeds one; Star Fox plays everything through one). The ring's shared indices,
++// in frames modulo (frame count + 1): the system's read index at buffer + 0x44, the game's write
++// index at buffer + 0x1004; the frames start at buffer + 0x1040 (nn::audio::sysmix's ring setup).
+ struct Nx2SysmixStream {
+     u32 id{};
+     u32 owner{}; ///< the user session whose timer drains it
+@@ -51,6 +55,16 @@ struct Nx2SysmixStream {
+     s32 data_threshold{}; ///< free frames that signal the data event
+     Kernel::KEvent* state_event{};
+     Kernel::KEvent* data_event{};
++    AudioCore::Sink::Sink* output{};
++    AudioCore::Sink::SinkStream* sink{}; ///< Eden's output stream, made on the first frames played
++    u64 sink_tag{};
++
++    ~Nx2SysmixStream() {
++        if (sink != nullptr) {
++            sink->Stop();
++            output->CloseStream(sink);
++        }
++    }
+ };
+ 
+ struct Nx2SysmixStreams {
+@@ -416,11 +430,56 @@ private:
+     static constexpr std::chrono::nanoseconds DrainInterval{std::chrono::milliseconds{5}};
+     static constexpr u64 ReadIndexOffset = 0x44;
+     static constexpr u64 WriteIndexOffset = 0x1004;
++    static constexpr u64 DataOffset = 0x1040;
+ 
+     // Takes up to one interval's worth of frames out of each engaged ring (frames owed while a ring
+     // is empty are dropped, as an underrun plays silence), and signals the data event of every open
+     // stream with at least its threshold of free frames, engaged or not: the game fills the ring
+     // before it engages the stream.
++    // Hands `count` frames from ring index `read` to Eden's output as s16.
++    static void Play(Core::System& system, Nx2SysmixStream& stream, u32 read, u32 count) {
++        const u32 sample_size = stream.sample_type == 2 ? 2 : stream.sample_type == 5 ? 4 : 0;
++        if (sample_size == 0 || stream.channels == 0 || stream.channels > 6) {
++            return;
++        }
++        if (stream.sink == nullptr) {
++            stream.output = &system.AudioCore().GetOutputSink();
++            stream.sink = stream.output->AcquireSinkStream(system, stream.channels, "nx2:sysmix",
++                                                           AudioCore::Sink::StreamType::Out);
++            stream.sink->Start();
++            LOG_INFO(Service_Audio, "stream {} plays through Eden's output: {} channels, type {}",
++                     stream.id, stream.channels, stream.sample_type);
++        }
++        auto& memory = system.ApplicationMemory();
++        const u32 capacity = stream.frames + 1;
++        const u64 frame_bytes = u64{sample_size} * stream.channels;
++        std::vector<u8> raw(u64{count} * frame_bytes);
++        const u32 first = (std::min)(count, capacity - read);
++        memory.ReadBlock(stream.buffer + DataOffset + u64{read} * frame_bytes, raw.data(),
++                         first * frame_bytes);
++        if (first < count) {
++            memory.ReadBlock(stream.buffer + DataOffset, raw.data() + first * frame_bytes,
++                             (count - first) * frame_bytes);
++        }
++        std::vector<s16> samples(u64{count} * stream.channels);
++        if (sample_size == 2) {
++            std::memcpy(samples.data(), raw.data(), raw.size());
++        } else {
++            for (size_t i = 0; i < samples.size(); ++i) {
++                f32 value{};
++                std::memcpy(&value, raw.data() + i * 4, 4);
++                samples[i] = static_cast<s16>(std::clamp(value * 32767.0f, -32768.0f, 32767.0f));
++            }
++        }
++        AudioCore::Sink::SinkBuffer buffer{
++            .frames = count,
++            .frames_played = 0,
++            .tag = stream.sink_tag++,
++            .consumed = false,
++        };
++        stream.sink->AppendBuffer(buffer, samples);
++    }
++
+     static void Drain(Core::System& system, Nx2SysmixStreams& state, u32 owner) {
+         std::scoped_lock lk{state.mutex};
+         auto& memory = system.ApplicationMemory();
+@@ -442,6 +501,7 @@ private:
+                 stream->owed_frames -= owed;
+                 const u32 taken = (std::min)(filled, owed);
+                 if (taken != 0) {
++                    Play(system, *stream, read, taken);
+                     memory.Write32(stream->buffer + ReadIndexOffset, (read + taken) % capacity);
+                     filled -= taken;
+                 }
+diff --git a/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h b/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
+index cde26ecb9..95a34713a 100644
+--- a/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
++++ b/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
+@@ -783,7 +783,18 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+         case 0x81c: { // PLOP3.LUT; bit 67 makes the third source a uniform predicate.
+             const u32 target = insn.Bits(81, 3);
+             const u32 lut = insn.Bits(64, 3) | (insn.Bits(72, 5) << 3);
+-            if (target == 7 || insn.Bits(84, 3) != 7 ||
++            // A second destination (bits 84-86) with its own table (bits 16-23), from the same
++            // sources (Star Fox's cutscenes): both tables run on the sources the helper has
++            // already copied to R250-R252, so a destination that is also a source is fine.
++            const u32 second = insn.Bits(84, 3);
++            if (second != 7 && !insn.Bits(67, 1) && !insn.words[1]) {
++                predicate_lut(lut, insn.Bits(87, 4), insn.Bits(77, 4), insn.Bits(68, 4), target);
++                emit(0x5be0000000000000ULL | predicate | 255 | (u64{250} << 8) | (u64{251} << 20) |
++                     (u64{insn.Bits(16, 8)} << 28) | (u64{3} << 36) | (u64{252} << 39) |
++                     (u64{second} << 48));
++                break;
++            }
++            if (target == 7 || second != 7 ||
+                 insn.Bits(16, 8) || insn.words[1])
+                 return fail(index, "native predicate LUT mode");
+             if (!insn.Bits(67, 1) && (lut == 0xfe || lut == 0xa8)) {
+@@ -1178,12 +1189,15 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+                 (u64{channels} << 20) | (u64{dimension} << 33) | (u64{offset} << 36) | (u64{1} << 51));
+             break;
+         }
+-        case 0xb9b: { // SUST.P.2D/3D.IGN, direct descriptor and all four channels.
++        case 0xb9b: { // SUST.P.2D/3D.IGN, direct descriptor, channel mask at 72-75.
+             const u32 binding = insn.Bits(54, 5), offset = insn.Bits(40, 14);
+             const u32 data = insn.Bits(32, 8), coordinate = insn.Bits(24, 8);
+             const u32 dimension = insn.Bits(61, 3);
+-            const bool strong = insn.words[2] == 0x0010af00; // .STRONG.GPU: fenced on both sides
+-            if ((insn.words[2] != 0x00100f00 && !strong) || dimension < 3 || dimension > 5 ||
++            // Any channel mask (Star Fox's video conversion stores one channel), as Maxwell's.
++            const u32 channels = insn.Bits(72, 4);
++            const bool strong = (insn.words[2] & ~0xf00U) == 0x0010a000; // .STRONG.GPU: fenced on both sides
++            if (((insn.words[2] & ~0xf00U) != 0x00100000 && !strong) || channels == 0 ||
++                dimension < 3 || dimension > 5 ||
+                 binding >= 18 || offset > 0x1fff || insn.Bits(59, 2) || data > 252 || coordinate > (dimension >= 4 ? 252U : 253U))
+                 return fail(index, "native formatted surface store mode");
+             // A second descriptor buffer: SUST.B with the handle, loaded from that buffer, in R250.
+@@ -1193,16 +1207,17 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+             }
+             if (strong) emit(0xef98000000000000ULL | predicate | (u64{1} << 8)); // MEMBAR.GL
+             emit(0xeb20000000000000ULL | predicate | data | (u64{coordinate} << 8) |
+-                (u64{15} << 20) | (u64{dimension} << 33) |
++                (u64{channels} << 20) | (u64{dimension} << 33) |
+                 (bindless ? u64{250} << 39 : (u64{offset} << 36) | (u64{1} << 51)));
+             if (strong) emit(0xef98000000000000ULL | predicate | (u64{1} << 8));
+             break;
+         }
+-        case 0x59f: { // SURED.D.2D.ADD.STRONG.GPU.IGN U32, direct descriptor (title 1's race compute).
++        case 0x59f: { // SURED.D.{2D,2D_ARRAY,3D}.ADD.STRONG.GPU.IGN U32, direct descriptor (title 1's race compute; Star Fox's 3D).
+             const u32 binding = insn.Bits(54, 5), offset = insn.Bits(40, 14);
+             const u32 data = insn.Bits(32, 8), coordinate = insn.Bits(24, 8);
+-            if (insn.words[2] != 0x0010e000 || insn.Bits(61, 3) != 3 || binding >= 18 ||
+-                offset > 0x1fff || insn.Bits(59, 2) || coordinate > 253)
++            const u32 dimension = insn.Bits(61, 3); // Maxwell's codes: 3 = 2D, 4 = 2D_ARRAY, 5 = 3D
++            if (insn.words[2] != 0x0010e000 || dimension < 3 || dimension > 5 || binding >= 18 ||
++                offset > 0x1fff || insn.Bits(59, 2) || coordinate > (dimension >= 4 ? 252U : 253U))
+                 return fail(index, "native surface reduction mode");
+             if (result.required_texture_buffer != ~0U && result.required_texture_buffer != binding)
+                 return fail(index, "native surface descriptor buffer conflict");
+@@ -1210,7 +1225,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+             // Maxwell SURED (as the frontend decodes it): operand 0-7, coordinates 8-15, ADD and
+             // U32 are zero at 24 and 20, type 33 (3 = 2D), bound offset 36, bound 51.
+             emit(0xeb40000000000000ULL | predicate | data | (u64{coordinate} << 8) |
+-                (u64{3} << 33) | (u64{offset} << 36) | (u64{1} << 51));
++                (u64{dimension} << 33) | (u64{offset} << 36) | (u64{1} << 51));
+             break;
+         }
+         case 0x301: // BREV register.
+@@ -1234,6 +1249,15 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+                 emit(base(0x5c28000000000000ULL) | (u64{low} << 8) | (u64{shift} << 20));
+                 break;
+             }
++            // SHF.R.S32.HI Rd, RZ, n, Rb (type 2 at 73-74): an arithmetic right shift of Rb, as
++            // Maxwell's signed SHR, which also fills with the sign past 31 (Star Fox's compute).
++            if (right && high_result && low == 255 && high != 255 && insn.Bits(73, 2) == 2 &&
++                shift != ~0U && shift_operand &&
++                (insn.words[2] & ~(0x000118ffU | (opcode == 0xc19 ? 0x08000000U : 0U))) == 0x00000400U) {
++                load_shift();
++                emit(base(0x5c28000000000000ULL) | (u64{high} << 8) | (u64{shift} << 20) | (u64{1} << 48));
++                break;
++            }
+             if (!shift_operand || insn.Bits(73, 2) != 3 || shift == ~0U ||
+                 (insn.words[2] & ~(0x000118ffU | (opcode == 0xc19 ? 0x08000000U : 0U))) != 0x00000600U ||
+                 (right ? (!high_result || low != 255) : (high_result || high != 255)))
+@@ -1943,6 +1967,28 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+                          (u64{15} << 39) | (u64{250 + component} << 20));
+                 break;
+             }
++            // ARRAY_2D without offsets: the operands are (layer, x | y) as for TEX, and Maxwell
++            // TLD4 (type 3) takes layer, x, y from consecutive registers (Star Fox's compute).
++            if (!bindless && insn.Bits(61, 3) == 5 && !insn.Bits(76, 2) && !insn.Bits(78, 3) &&
++                insn.Bits(81, 3) == 7 && !insn.Bits(59, 1) && !insn.Bits(89, 1) && !insn.Bits(91, 1) &&
++                mask && binding < 18 && insn.Bits(40, 14) <= 0x1fff && source_a != 255 &&
++                source_a + 2 < 246 && source_b < 246 && dest != 255) {
++                if (result.required_texture_buffer != ~0U && result.required_texture_buffer != binding)
++                    return fail(index, "native texture descriptor buffer conflict");
++                result.required_texture_buffer = binding;
++                emit(0x5c98000000000000ULL | predicate | 250 | (u64{15} << 39) | (u64{source_a} << 20));
++                emit(0x5c98000000000000ULL | predicate | 251 | (u64{15} << 39) | (u64{source_a + 1} << 20));
++                emit(0x5c98000000000000ULL | predicate | 252 | (u64{15} << 39) | (u64{source_b} << 20));
++                emit(0xc800000000000000ULL | predicate | 250 | (u64{250} << 8) | (u64{255} << 20) |
++                     (u64{3} << 28) | (u64{mask} << 31) | (u64{insn.Bits(40, 14)} << 36) |
++                     (u64{insn.Bits(90, 1)} << 49) | (u64{7} << 51) | (u64{insn.Bits(87, 2)} << 56));
++                const bool split = second_dest != 255;
++                for (u32 i = 0; i < components; ++i) {
++                    const u32 target = !split || i < 2 ? static_cast<u32>(dest) + i : second_dest + (i - 2);
++                    emit(0x5c98000000000000ULL | predicate | target | (u64{15} << 39) | (u64{250 + i} << 20));
++                }
++                break;
++            }
+             // Bit 76: a texel offset after the coordinates (x, y in Ra, Ra+1, offsets in Rb, as
+             // for TEX); Maxwell TLD4 takes it as AOFFI (bits 54-55) from Rb.
+             const bool offsets = insn.Bits(76, 1) != 0;
+-- 
+2.51.0.windows.1
+

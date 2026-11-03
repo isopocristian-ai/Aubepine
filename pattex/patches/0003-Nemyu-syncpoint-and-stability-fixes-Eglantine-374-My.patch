@@ -1,0 +1,763 @@
+From c283444a2aab34b49c051222809b83997b898375 Mon Sep 17 00:00:00 2001
+From: pattex67 <33281022+pattex67@users.noreply.github.com>
+Date: Tue, 3 Nov 2026 23:00:52 +0100
+Subject: [PATCH 3/6] Nemyu syncpoint and stability fixes, Eglantine #374,
+ MythosOfs syncpoint id guard, Selevet Kirby white-frame fixes
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/common/host_memory.cpp                    | 14 ++--
+ src/core/core.cpp                             | 12 +--
+ src/core/hle/service/nx2_gsv.h                | 84 +++++++++++++++----
+ .../ir_opt/position_pass.cpp                  | 34 +++++++-
+ src/tests/common/host_memory.cpp              | 23 +++++
+ src/video_core/buffer_cache/buffer_cache.h    | 16 +++-
+ src/video_core/engines/engine_upload.cpp      | 22 ++++-
+ src/video_core/engines/engine_upload.h        |  2 +
+ src/video_core/engines/kepler_compute.cpp     |  5 ++
+ src/video_core/engines/kepler_compute.h       |  8 ++
+ src/video_core/gpu.cpp                        | 24 ++++--
+ src/video_core/host1x/syncpoint_manager.cpp   | 22 +++++
+ .../renderer_vulkan/vk_buffer_cache.cpp       |  1 +
+ .../renderer_vulkan/vk_multi_range_buffer.cpp | 14 ++--
+ .../renderer_vulkan/vk_multi_range_buffer.h   |  2 +
+ .../texture_cache/descriptor_table.h          | 24 +++++-
+ src/video_core/texture_cache/texture_cache.h  |  4 +-
+ 17 files changed, 260 insertions(+), 51 deletions(-)
+
+diff --git a/src/common/host_memory.cpp b/src/common/host_memory.cpp
+index 2b7536dec..01e6bd318 100644
+--- a/src/common/host_memory.cpp
++++ b/src/common/host_memory.cpp
+@@ -7,6 +7,7 @@
+ #ifdef _WIN32
+ 
+ #include <iterator>
++#include <utility>
+ #include "common/container/unordered_map.h"
+ #include <boost/icl/separate_interval_set.hpp>
+ #include <windows.h>
+@@ -255,21 +256,24 @@ private:
+                 }
+             }
+             Coalesce(0, virtual_size);
++            placeholders.clear();
++            placeholder_host_pointers.clear();
+         }
+         if (virtual_base) {
+-            if (!VirtualFree(virtual_base, 0, MEM_RELEASE)) {
++            if (!VirtualFree(std::exchange(virtual_base, nullptr), 0, MEM_RELEASE)) {
+                 LOG_CRITICAL(HW_Memory, "Failed to free virtual memory");
+             }
+         }
+         if (backing_base) {
+-            if (!pfn_UnmapViewOfFile2(process, backing_base, MEM_PRESERVE_PLACEHOLDER)) {
++            void* const address = std::exchange(backing_base, nullptr);
++            if (!pfn_UnmapViewOfFile2(process, address, MEM_PRESERVE_PLACEHOLDER)) {
+                 LOG_CRITICAL(HW_Memory, "Failed to unmap backing memory placeholder");
+             }
+-            if (!VirtualFreeEx(process, backing_base, 0, MEM_RELEASE)) {
++            if (!VirtualFreeEx(process, address, 0, MEM_RELEASE)) {
+                 LOG_CRITICAL(HW_Memory, "Failed to free backing memory");
+             }
+         }
+-        if (!CloseHandle(backing_handle)) {
++        if (backing_handle && !CloseHandle(std::exchange(backing_handle, nullptr))) {
+             LOG_CRITICAL(HW_Memory, "Failed to free backing memory file handle");
+         }
+     }
+@@ -748,7 +752,7 @@ HostMemory::HostMemory(size_t backing_size_, size_t virtual_size_)
+ HostMemory::~HostMemory() {
+ #ifdef _WIN32
+     if (fallback_buffer) {
+-        VirtualFree(backing_base, backing_size, MEM_RELEASE);
++        VirtualFree(backing_base, 0, MEM_RELEASE);
+     }
+ #else
+     if (fallback_buffer) {
+diff --git a/src/core/core.cpp b/src/core/core.cpp
+index 7e1f3d55d..5e2e4ebc2 100644
+--- a/src/core/core.cpp
++++ b/src/core/core.cpp
+@@ -173,7 +173,7 @@ struct System::Impl {
+         device_memory.emplace();
+ 
+         is_multicore = Settings::values.use_multi_core.GetValue();
+-        extended_memory_layout = Settings::values.memory_layout_mode.GetValue() != Settings::MemoryLayout::Memory_4Gb;
++        memory_layout = Settings::values.memory_layout_mode.GetValue();
+ 
+         core_timing.SetMulticore(is_multicore);
+         core_timing.Initialize([&system]() { system.RegisterHostThread(); });
+@@ -200,8 +200,9 @@ struct System::Impl {
+         const bool must_reinitialize =
+             !device_memory.has_value() ||
+             is_multicore != Settings::values.use_multi_core.GetValue() ||
+-            extended_memory_layout != (Settings::values.memory_layout_mode.GetValue() !=
+-                                       Settings::MemoryLayout::Memory_4Gb);
++            // Any change of size: the device memory was made for the old one. Switch 2 titles force
++            // 12 GiB, and with 6-10 GiB configured the kernel handed out memory past its end.
++            memory_layout != Settings::values.memory_layout_mode.GetValue();
+ 
+         if (!must_reinitialize) {
+             return;
+@@ -210,8 +211,7 @@ struct System::Impl {
+         LOG_DEBUG(Kernel, "Re-initializing");
+ 
+         is_multicore = Settings::values.use_multi_core.GetValue();
+-        extended_memory_layout =
+-            Settings::values.memory_layout_mode.GetValue() != Settings::MemoryLayout::Memory_4Gb;
++        memory_layout = Settings::values.memory_layout_mode.GetValue();
+ 
+         Initialize(system);
+     }
+@@ -602,7 +602,7 @@ struct System::Impl {
+     std::atomic_bool is_shutting_down{};
+     std::atomic_bool is_powered_on{};
+     bool is_multicore : 1 = false;
+-    bool extended_memory_layout : 1 = false;
++    Settings::MemoryLayout memory_layout{Settings::MemoryLayout::Memory_4Gb};
+     bool exit_locked : 1 = false;
+     bool exit_requested : 1 = false;
+     bool nvdec_active : 1 = false;
+diff --git a/src/core/hle/service/nx2_gsv.h b/src/core/hle/service/nx2_gsv.h
+index 8bc787076..fe581a213 100644
+--- a/src/core/hle/service/nx2_gsv.h
++++ b/src/core/hle/service/nx2_gsv.h
+@@ -210,6 +210,7 @@ private:
+     struct SlotRequest {
+         u32 syncpoint{};
+         std::atomic<bool> pending{};
++        u64 generation{}; ///< Bumped by each request, under SharedState::mutex
+         Tegra::Host1x::SyncpointManager::ActionHandle handle{};
+     };
+ 
+@@ -241,20 +242,28 @@ private:
+         }
+         auto& request = m_requests[slot];
+         Cancel(request);
+-        // A new request starts unsignalled. Slots are reused by different client objects: title 1's
+-        // movie player got slot 0 after NVN's fence waits had left it signalled, took that as a
+-        // decoded frame and aborted when the decoder had none.
+-        event->Clear(system.Kernel());
+-        request.syncpoint = syncpoint;
+-        request.pending = true;
++        u64 generation{};
++        {
++            // A new request starts unsignalled. Slots are reused by different client objects:
++            // title 1's movie player got slot 0 after NVN's fence waits had left it signalled,
++            // took that as a decoded frame and aborted when the decoder had none. The previous
++            // request's action may be between pending = false and its Signal: taking the mutex
++            // here orders that signal before this Clear, and the generation would drop it if an
++            // old action ever ran later.
++            std::scoped_lock lk{m_shared->mutex};
++            generation = ++request.generation;
++            event->Clear(system.Kernel());
++            request.syncpoint = syncpoint;
++            request.pending = true;
++        }
+         auto& manager = system.Host1x().GetSyncpointManager();
+         // The action runs on the GPU thread under the manager's lock, or inline if the value is
+-        // already reached.
++        // already reached (so the mutex is not held here).
+         request.handle = manager.RegisterGuestAction(
+             syncpoint, static_cast<u32>(value),
+-            [shared = m_shared, &kernel = system.Kernel(), &request, event] {
++            [shared = m_shared, &kernel = system.Kernel(), &request, event, generation] {
+                 std::scoped_lock lk{shared->mutex};
+-                if (!shared->alive) {
++                if (!shared->alive || request.generation != generation) {
+                     return;
+                 }
+                 request.pending = false;
+@@ -3399,6 +3408,32 @@ private:
+         rb.PushCopyObjects(ctx, m_syncpt_events[1]->GetReadableEvent());
+     }
+ 
++    static bool SyncptValuesFirst() {
++        static const bool values_first = [] {
++            const char* value = std::getenv("EDEN_NX2_SYNCPT_VALUES_FIRST");
++            return value != nullptr && value[0] == '1';
++        }();
++        return values_first;
++    }
++
++    // Test only: EDEN_NX2_SYNCPT_POLL_DELAY_US=<us> (at most 400, under the poll interval) holds
++    // each poll that long between its two reads, to widen the window PollSyncpts describes. It
++    // needs multicore, where the poll runs on the HostTiming thread, and delays every wait it
++    // answers, so frame times from such a run mean nothing.
++    static void SyncptPollTestDelay() {
++        static const u32 delay_us = [] {
++            const char* value = std::getenv("EDEN_NX2_SYNCPT_POLL_DELAY_US");
++            const unsigned long parsed = value != nullptr ? std::strtoul(value, nullptr, 10) : 0;
++            return static_cast<u32>((std::min)(parsed, 400UL));
++        }();
++        if (delay_us == 0) [[likely]] {
++            return;
++        }
++        const auto until = std::chrono::steady_clock::now() + std::chrono::microseconds{delay_us};
++        while (std::chrono::steady_clock::now() < until) {
++        }
++    }
++
+     // Mirrors Eden's guest syncpoint values into the shared RO page. Returns true if any changed.
+     bool UpdateSyncptValues() {
+         auto& manager = system.Host1x().GetSyncpointManager();
+@@ -3417,23 +3452,40 @@ private:
+     // Answers every armed wait: the value page is current, so the client rechecks its threshold
+     // and rearms if it still has to wait. Acknowledging without a value change costs the client a
+     // wakeup per poll, which keeps waits whose syncpoint we never see from hanging.
++    // The armed bits are read before the values, so every answer carries values read after the
++    // wait was armed; a wait armed later is answered by the next poll. The other way round, a
++    // wait armed between the two reads got values from before it: title 1's movie player arms
++    // right after its slot event fires, takes the miss as fatal and aborted (2162-0001) about
++    // once per two minutes of its 640x360 movie. EDEN_NX2_SYNCPT_VALUES_FIRST=1 reads the values
++    // first, as before.
+     void PollSyncpts() {
+         if (m_syncpt_memory == nullptr) {
+             return;
+         }
+-        UpdateSyncptValues();
+-        bool acked = false;
++        if (SyncptValuesFirst()) {
++            UpdateSyncptValues();
++            SyncptPollTestDelay();
++        }
+         const u32 words = (m_syncpt_count + 63) / 64;
++        std::array<u64, 0x40> armed{};
++        for (u32 w = 0; w < words; ++w) {
++            armed[w] = m_syncpt_memory->Read64(m_syncpt_rw + SyncptRwBitsOffset + w * 8);
++        }
++        const u64 armed_summary = m_syncpt_memory->Read64(m_syncpt_rw + SyncptRwSummaryOffset);
++        if (!SyncptValuesFirst()) {
++            SyncptPollTestDelay();
++            std::atomic_thread_fence(std::memory_order_seq_cst);
++            UpdateSyncptValues();
++        }
++        bool acked = false;
+         for (u32 w = 0; w < words; ++w) {
+-            const u64 rw_bits = m_syncpt_memory->Read64(m_syncpt_rw + SyncptRwBitsOffset + w * 8);
+             const u64 ro_address = m_syncpt_ro + SyncptRoBitsOffset + w * 8;
+-            if (m_syncpt_memory->Read64(ro_address) != rw_bits) {
+-                m_syncpt_memory->Write64(ro_address, rw_bits);
++            if (m_syncpt_memory->Read64(ro_address) != armed[w]) {
++                m_syncpt_memory->Write64(ro_address, armed[w]);
+                 acked = true;
+             }
+         }
+-        m_syncpt_memory->Write64(m_syncpt_ro + SyncptRoSummaryOffset,
+-                                 m_syncpt_memory->Read64(m_syncpt_rw + SyncptRwSummaryOffset));
++        m_syncpt_memory->Write64(m_syncpt_ro + SyncptRoSummaryOffset, armed_summary);
+         if (acked) {
+             m_syncpt_events[1]->Signal(system.Kernel());
+         }
+diff --git a/src/shader_recompiler/ir_opt/position_pass.cpp b/src/shader_recompiler/ir_opt/position_pass.cpp
+index 600a596bf..3da968de2 100644
+--- a/src/shader_recompiler/ir_opt/position_pass.cpp
++++ b/src/shader_recompiler/ir_opt/position_pass.cpp
+@@ -1,6 +1,8 @@
+ // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
++#include <unordered_set>
++
+ #include <boost/container/small_vector.hpp>
+ 
+ #include "shader_recompiler/frontend/ir/basic_block.h"
+@@ -114,6 +116,34 @@ void BlitConstantsPass(Environment& env, IR::Program& program) {
+     if (!reads_nonzero_word) {
+         return;
+     }
++    // The blit block's words below 0x20 and at 0x30-0x3c are floats. One a shader adds as an
++    // integer is a dither bias, which the console leaves zero: Kirby Air Riders' final pass adds
++    // c[24][0x10..0x18] to its colour's bits, and given this block's texel size and UV scale there
++    // every pixel went white. From Selevet Eglantine performance build 6 (c3aa97d95).
++    const auto is_float_word = [](u32 offset) {
++        return offset < 0x20 || (offset >= 0x30 && offset < 0x40);
++    };
++    std::unordered_set<const IR::Inst*> integer_reads;
++    for (IR::Block* const block : program.post_order_blocks) {
++        for (IR::Inst& inst : block->Instructions()) {
++            const IR::Opcode opcode{inst.GetOpcode()};
++            if (opcode != IR::Opcode::IAdd32 && opcode != IR::Opcode::ISub32) {
++                continue;
++            }
++            for (size_t arg = 0; arg < inst.NumArgs(); ++arg) {
++                const IR::Value value{inst.Arg(arg)};
++                if (value.IsImmediate()) {
++                    continue;
++                }
++                const IR::Inst* const source{value.InstRecursive()};
++                if (source->GetOpcode() == IR::Opcode::GetCbufU32 && source->Arg(0).IsImmediate() &&
++                    source->Arg(0).U32() == 17 && source->Arg(1).IsImmediate() &&
++                    is_float_word(source->Arg(1).U32())) {
++                    integer_reads.insert(source);
++                }
++            }
++        }
++    }
+     bool used{};
+     for (IR::Block* const block : program.post_order_blocks) {
+         for (IR::Inst& inst : block->Instructions()) {
+@@ -155,7 +185,9 @@ void BlitConstantsPass(Environment& env, IR::Program& program) {
+             };
+             const u32 offset{inst.Arg(1).U32()};
+             IR::Value value;
+-            if (opcode == IR::Opcode::GetCbufU32x2) {
++            if (integer_reads.contains(&inst)) {
++                value = ir.Imm32(0U); // a dither bias (see above)
++            } else if (opcode == IR::Opcode::GetCbufU32x2) {
+                 value = ir.CompositeConstruct(word(offset), word(offset + 4));
+             } else if (opcode == IR::Opcode::GetCbufF32) {
+                 value = ir.BitCast<IR::F32>(word(offset));
+diff --git a/src/tests/common/host_memory.cpp b/src/tests/common/host_memory.cpp
+index 71354a6c5..95bcf302a 100644
+--- a/src/tests/common/host_memory.cpp
++++ b/src/tests/common/host_memory.cpp
+@@ -6,6 +6,10 @@
+ 
+ #include <catch2/catch_test_macros.hpp>
+ 
++#ifdef _WIN32
++#include <windows.h>
++#endif
++
+ #include "common/host_memory.h"
+ #include "common/literals.h"
+ 
+@@ -17,6 +21,25 @@ static constexpr size_t BACKING_SIZE = 4_GiB;
+ static constexpr auto PERMS = Common::MemoryPermission::ReadWrite;
+ static constexpr auto HEAP = false;
+ 
++#ifdef _WIN32
++TEST_CASE("HostMemory: Failed arena initialization releases fallback backing", "[common]") {
++    for (int attempt = 0; attempt < 3; ++attempt) {
++        void* address{};
++        {
++            // Exceeds the Windows user address space, forcing the private fallback.
++            HostMemory memory(64_KiB, 1ULL << 60);
++            REQUIRE(memory.VirtualBasePointer() == nullptr);
++            address = memory.BackingBasePointer();
++            REQUIRE(address != nullptr);
++            memory.BackingBasePointer()[0] = 17;
++        }
++        MEMORY_BASIC_INFORMATION information{};
++        REQUIRE(VirtualQuery(address, &information, sizeof(information)) != 0);
++        REQUIRE(information.State == MEM_FREE);
++    }
++}
++#endif
++
+ TEST_CASE("HostMemory: Initialize and deinitialize", "[common]") {
+     {
+         HostMemory mem(BACKING_SIZE, VIRTUAL_SIZE);
+diff --git a/src/video_core/buffer_cache/buffer_cache.h b/src/video_core/buffer_cache/buffer_cache.h
+index cb1857293..f576dd596 100644
+--- a/src/video_core/buffer_cache/buffer_cache.h
++++ b/src/video_core/buffer_cache/buffer_cache.h
+@@ -7,6 +7,7 @@
+ #pragma once
+ 
+ #include <algorithm>
++#include <atomic>
+ #include <memory>
+ #include <numeric>
+ #include <stdexcept>
+@@ -1582,9 +1583,18 @@ void BufferCache<P>::UpdateVertexBuffer(u32 index) {
+     const auto& limit = maxwell3d->regs.vertex_stream_limits[index];
+     const GPUVAddr gpu_addr_begin = array.Address();
+     const bool native = maxwell3d->GetNativeMacroEngine().native_turing;
+-    const u64 native_size = native ? maxwell3d->regs.NativeVertexStreamSize(index) : 0;
+-    if (native && array.enable != 0 && native_size > (std::numeric_limits<u32>::max)()) {
+-        throw std::runtime_error("Native vertex stream exceeds supported 32-bit buffer size");
++    u64 native_size = native ? maxwell3d->regs.NativeVertexStreamSize(index) : 0;
++    if (native && array.enable != 0 && native_size > (std::numeric_limits<u32>::max)()) [[unlikely]] {
++        // Garbage commands can set this. Throwing here aborted the emulator from the GPU thread;
++        // clamp like Maxwell3D::GetMaxCurrentVertices, and MaxContinuousRange bounds it below.
++        static std::atomic<u32> reported{};
++        if (reported.fetch_add(1, std::memory_order_relaxed) < 16) {
++            const std::size_t method = 0x600 / sizeof(u32) + index * 2;
++            LOG_WARNING(HW_GPU, "Vertex stream {} size words {:#010x} {:#010x} exceed 4 GiB, clamping",
++                        index, maxwell3d->regs.reg_array[method],
++                        maxwell3d->regs.reg_array[method + 1]);
++        }
++        native_size = (std::numeric_limits<u32>::max)();
+     }
+     const GPUVAddr gpu_addr_end = native ? gpu_addr_begin + native_size : limit.Address() + 1;
+     const std::optional<DAddr> device_addr = gpu_memory->GpuToCpuAddress(gpu_addr_begin);
+diff --git a/src/video_core/engines/engine_upload.cpp b/src/video_core/engines/engine_upload.cpp
+index 0ffdae803..d56bf8fbf 100644
+--- a/src/video_core/engines/engine_upload.cpp
++++ b/src/video_core/engines/engine_upload.cpp
+@@ -28,12 +28,27 @@ void State::BindRasterizer(VideoCore::RasterizerInterface* rasterizer_) {
+ void State::ProcessExec(const bool is_linear_) {
+     write_offset = 0;
+     flushed_offset = 0;
+-    copy_size = regs.line_length_in * regs.line_count;
+-    inner_buffer.resize_destructive(copy_size);
+     is_linear = is_linear_;
++    // Inline uploads carry their data in the command stream, so real ones are small. Garbage
++    // commands (a pushbuffer parse out of step) can ask for gigabytes, and allocating that threw
++    // std::bad_alloc on the GPU thread and aborted the emulator mid-race.
++    constexpr u64 MaxCopySize = 64ULL << 20;
++    const u64 size = u64{regs.line_length_in} * regs.line_count;
++    rejected = size > MaxCopySize;
++    if (rejected) {
++        LOG_ERROR(HW_GPU, "Ignoring an inline upload of {} lines of {} bytes", regs.line_count,
++                  regs.line_length_in);
++        copy_size = 0;
++        return;
++    }
++    copy_size = static_cast<u32>(size);
++    inner_buffer.resize_destructive(copy_size);
+ }
+ 
+ void State::ProcessData(const u32 data, const bool is_last_call) {
++    if (rejected) {
++        return;
++    }
+     const u32 sub_copy_size = (std::min)(4U, copy_size - write_offset);
+     std::memcpy(&inner_buffer[write_offset], &data, sub_copy_size);
+     write_offset += sub_copy_size;
+@@ -53,6 +68,9 @@ void State::ProcessData(const u32 data, const bool is_last_call) {
+ }
+ 
+ void State::ProcessData(const u32* data, size_t num_data) {
++    if (rejected) {
++        return;
++    }
+     if (native_partial && is_linear && regs.line_count == 1) {
+         const auto count = std::min<size_t>(num_data * sizeof(u32), copy_size - write_offset);
+         if (count) {
+diff --git a/src/video_core/engines/engine_upload.h b/src/video_core/engines/engine_upload.h
+index 55a82f938..860e52074 100644
+--- a/src/video_core/engines/engine_upload.h
++++ b/src/video_core/engines/engine_upload.h
+@@ -82,6 +82,8 @@ private:
+     void ProcessData(std::span<const u8> read_buffer);
+ 
+     bool native_partial{};
++    /// The upload's size was impossible (garbage commands): its data is dropped.
++    bool rejected{};
+     u32 flushed_offset{};
+     u32 write_offset = 0;
+     u32 copy_size = 0;
+diff --git a/src/video_core/engines/kepler_compute.cpp b/src/video_core/engines/kepler_compute.cpp
+index be6a1d5ea..01d66792b 100644
+--- a/src/video_core/engines/kepler_compute.cpp
++++ b/src/video_core/engines/kepler_compute.cpp
+@@ -546,6 +546,10 @@ bool KeplerCompute::DispatchNativeCompute(const NativeQmdScheduler::Descriptor&
+     }
+     if (!launch_description.block_dim_x || !launch_description.block_dim_y || !launch_description.block_dim_z)
+         return false;
++    const u64 program = (u64{qmd[49] & 0x1ffff} << 32) | qmd[48];
++    if (tensor_programs.contains(program)) {
++        return UpscaleInsteadOfNativeProgram();
++    }
+     try {
+         rasterizer->DispatchCompute();
+     } catch (const Shader::Exception& error) {
+@@ -554,6 +558,7 @@ bool KeplerCompute::DispatchNativeCompute(const NativeQmdScheduler::Descriptor&
+             LOG_ERROR(HW_GPU, "Native compute shader rejected: {}", error.what());
+         }
+         if (std::string_view{error.what()}.find("matrix multiply") != std::string_view::npos) {
++            tensor_programs.insert(program);
+             DescribeNativeResources(qmd);
+             // The console runs this on tensor cores; stand in with a plain upscale of its input.
+             return UpscaleInsteadOfNativeProgram();
+diff --git a/src/video_core/engines/kepler_compute.h b/src/video_core/engines/kepler_compute.h
+index 6a0639029..3a731de82 100644
+--- a/src/video_core/engines/kepler_compute.h
++++ b/src/video_core/engines/kepler_compute.h
+@@ -12,6 +12,7 @@
+ #include <memory>
+ #include <optional>
+ #include <span>
++#include <unordered_set>
+ #include <vector>
+ #include "common/bit_field.h"
+ #include "common/common_funcs.h"
+@@ -269,6 +270,13 @@ private:
+     void RememberDlssMotionVectors();
+     bool UpscaleInsteadOfNativeProgram();
+ 
++    /// Programs rejected for their tensor-core matrix multiplies (by code address). The shader
++    /// cache throws only on a program's first dispatch and skips it silently after, so the
++    /// upscale stand-in runs for each later dispatch from here (Kirby Air Riders' frame stayed
++    /// the output's clear colour, white, after the first four frames). From Selevet Eglantine
++    /// performance build 6 (c3aa97d95).
++    std::unordered_set<u64> tensor_programs;
++
+     /// Motion vectors and depth of Fire Emblem: Fortune's Weave's DLSS evaluation, from its first
+     /// pass (run earlier in the frame than the network pass the stand-in replaces), with the input
+     /// colour image and camera jitter they go with.
+diff --git a/src/video_core/gpu.cpp b/src/video_core/gpu.cpp
+index 76bf3df06..bea9a0b3d 100644
+--- a/src/video_core/gpu.cpp
++++ b/src/video_core/gpu.cpp
+@@ -141,7 +141,12 @@ struct GPU::Impl {
+ 
+     void WaitForSyncOperation(const u64 fence) {
+         std::unique_lock lck{sync_request_mutex};
+-        sync_request_cv.wait(lck, [this, fence] { return CurrentSyncRequestFence() >= fence; });
++        // No thread runs the operation after the GPU threads stop, and a core waiting here would
++        // keep the emulation from stopping.
++        sync_request_cv.wait(lck, [this, fence] {
++            return CurrentSyncRequestFence() >= fence ||
++                   shutting_down.load(std::memory_order_relaxed);
++        });
+     }
+ 
+     void WaitForIdle() {
+@@ -186,6 +191,10 @@ struct GPU::Impl {
+         std::unique_lock lk{sync_mutex};
+         shutting_down.store(true, std::memory_order::relaxed);
+         sync_cv.notify_all();
++        lk.unlock();
++        // Taking the lock first makes a thread between its check and its wait get this wake.
++        { std::scoped_lock request_lock{sync_request_mutex}; }
++        sync_request_cv.notify_all();
+     }
+ 
+     /// Obtain the CPU Context
+@@ -232,6 +241,7 @@ struct GPU::Impl {
+                      raster_area.start_address, raster_area.end_address,
+                      reads.load(std::memory_order_relaxed));
+         }
++        // A copy: a wait that ends at shutdown leaves this operation in the queue.
+         const u64 fence = RequestSyncOperation([this, raster_area]() {
+             // Apply collected guest writes before downloading GPU data over guest memory.
+             InvalidateGPUCache();
+@@ -337,6 +347,13 @@ struct GPU::Impl {
+     // previous members has been destroyed
+     VideoCommon::GPUThread::ThreadManager gpu_thread;
+ 
++    // Declared before the renderer so they are destroyed after it: tearing the renderer down still
++    // submits work, and that marks the bound channel's Maxwell3D state dirty.
++    Tegra::Control::Scheduler scheduler;
++    ::Common::unordered_map<s32, std::shared_ptr<Tegra::Control::ChannelState>> channels;
++    Tegra::Control::ChannelState* current_channel;
++    s32 bound_channel{-1};
++
+     std::unique_ptr<VideoCore::RendererBase> renderer;
+     const bool use_nvdec;
+ 
+@@ -365,11 +382,6 @@ struct GPU::Impl {
+ 
+     std::unique_ptr<Core::Frontend::GraphicsContext> cpu_context;
+ 
+-    Tegra::Control::Scheduler scheduler;
+-    ::Common::unordered_map<s32, std::shared_ptr<Tegra::Control::ChannelState>> channels;
+-    Tegra::Control::ChannelState* current_channel;
+-    s32 bound_channel{-1};
+-
+     std::deque<size_t> free_swap_counters;
+     std::deque<size_t> request_swap_counters;
+     std::mutex request_swap_mutex;
+diff --git a/src/video_core/host1x/syncpoint_manager.cpp b/src/video_core/host1x/syncpoint_manager.cpp
+index 7b7353b6c..305c29fe3 100644
+--- a/src/video_core/host1x/syncpoint_manager.cpp
++++ b/src/video_core/host1x/syncpoint_manager.cpp
+@@ -4,12 +4,28 @@
+ // SPDX-FileCopyrightText: 2021 yuzu Emulator Project
+ // SPDX-License-Identifier: GPL-3.0-or-later
+ 
++#include "common/logging.h"
+ #include "video_core/host1x/syncpoint_manager.h"
+ 
+ namespace Tegra {
+ 
+ namespace Host1x {
+ 
++// The puller's fence action and the 3D sync_info register take the syncpoint id from the guest's
++// command stream (24 and 16 bits): an id past the table indexed unrelated memory as an action list
++// and crashed in Increment.
++static bool IsValidSyncpoint(u32 syncpoint_id) {
++    if (syncpoint_id < SyncpointManager::NUM_MAX_SYNCPOINTS) [[likely]] {
++        return true;
++    }
++    static std::atomic_flag logged;
++    if (!logged.test_and_set()) {
++        LOG_ERROR(HW_GPU, "Syncpoint {} is out of range, increment dropped (logged once)",
++                  syncpoint_id);
++    }
++    return false;
++}
++
+ SyncpointManager::ActionHandle SyncpointManager::RegisterAction(
+     std::atomic<u32>& syncpoint, std::list<RegisteredAction>& action_storage, u32 expected_value,
+     std::function<void()>&& action) {
+@@ -58,10 +74,16 @@ void SyncpointManager::DeregisterHostAction(u32 syncpoint_id, const ActionHandle
+ }
+ 
+ void SyncpointManager::IncrementGuest(u32 syncpoint_id) {
++    if (!IsValidSyncpoint(syncpoint_id)) {
++        return;
++    }
+     Increment(syncpoints_guest[syncpoint_id], wait_guest_cv, guest_action_storage[syncpoint_id]);
+ }
+ 
+ void SyncpointManager::IncrementHost(u32 syncpoint_id) {
++    if (!IsValidSyncpoint(syncpoint_id)) {
++        return;
++    }
+     Increment(syncpoints_host[syncpoint_id], wait_host_cv, host_action_storage[syncpoint_id]);
+ }
+ 
+diff --git a/src/video_core/renderer_vulkan/vk_buffer_cache.cpp b/src/video_core/renderer_vulkan/vk_buffer_cache.cpp
+index 43cb7d941..e117bc846 100644
+--- a/src/video_core/renderer_vulkan/vk_buffer_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_buffer_cache.cpp
+@@ -437,6 +437,7 @@ u32 BufferCacheRuntime::GetStorageBufferAlignment() const {
+ }
+ 
+ void BufferCacheRuntime::TickFrame(Common::SlotVector<Buffer>& slot_buffers) noexcept {
++    multi_range_buffers.TickFrame(scheduler);
+     for (auto it = slot_buffers.begin(); it != slot_buffers.end(); it++) {
+         if (scheduler.IsFree(it->LastUsageTick())) {
+             it->ResetUsageTracking();
+diff --git a/src/video_core/renderer_vulkan/vk_multi_range_buffer.cpp b/src/video_core/renderer_vulkan/vk_multi_range_buffer.cpp
+index 4d8439000..536ed6147 100644
+--- a/src/video_core/renderer_vulkan/vk_multi_range_buffer.cpp
++++ b/src/video_core/renderer_vulkan/vk_multi_range_buffer.cpp
+@@ -206,6 +206,10 @@ void MultiRangeBufferCache::DrainRetired(Scheduler& scheduler) {
+     }
+ }
+ 
++void MultiRangeBufferCache::TickFrame(Scheduler& scheduler) {
++    DrainRetired(scheduler);
++}
++
+ MultiRangeRef MultiRangeBufferCache::Get(const Device& device, Scheduler& scheduler,
+                                          MemoryAllocator& memory_allocator, u64 key,
+                                          std::span<const MultiRangeSource> sources,
+@@ -248,14 +252,12 @@ MultiRangeRef MultiRangeBufferCache::Get(const Device& device, Scheduler& schedu
+     entry.geometry = geometry;
+     entry.content = content;
+     entry.size = total;
++    entry.owners.reserve(sources.size());
++    for (const MultiRangeSource& source : sources) {
++        entry.owners.push_back(source.handle);
++    }
+     if (CanBindSparse(sources)) {
+         entry.sparse_handle = CreateSparse(device, scheduler, sources, total);
+-        if (entry.sparse_handle) {
+-            entry.owners.reserve(sources.size());
+-            for (const MultiRangeSource& source : sources) {
+-                entry.owners.push_back(source.handle);
+-            }
+-        }
+     }
+     if (!entry.sparse_handle) {
+         VkBufferUsageFlags flags = VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+diff --git a/src/video_core/renderer_vulkan/vk_multi_range_buffer.h b/src/video_core/renderer_vulkan/vk_multi_range_buffer.h
+index f40d3aa1f..56eabbe75 100644
+--- a/src/video_core/renderer_vulkan/vk_multi_range_buffer.h
++++ b/src/video_core/renderer_vulkan/vk_multi_range_buffer.h
+@@ -59,6 +59,8 @@ public:
+ 
+     void DropOwner(Scheduler& scheduler, VkBuffer owner);
+ 
++    void TickFrame(Scheduler& scheduler);
++
+     VkDeviceSize block_size{DEFAULT_BLOCK_SIZE};
+     bool use_sparse{};
+ 
+diff --git a/src/video_core/texture_cache/descriptor_table.h b/src/video_core/texture_cache/descriptor_table.h
+index a441e572d..55eefc43d 100644
+--- a/src/video_core/texture_cache/descriptor_table.h
++++ b/src/video_core/texture_cache/descriptor_table.h
+@@ -7,12 +7,14 @@
+ #pragma once
+ 
+ #include <algorithm>
++#include <cstring>
+ #include <vector>
+ 
+ #include "common/alignment.h"
+ #include "common/common_types.h"
+ #include "common/div_ceil.h"
+ #include "common/assert.h"
++#include "core/memory.h"
+ #include "video_core/memory_manager.h"
+ #include "video_core/rasterizer_interface.h"
+ 
+@@ -22,7 +24,7 @@ template <typename T>
+ class DescriptorTable {
+ public:
+     [[nodiscard]] bool Synchronize(GPUVAddr gpu_addr, u32 limit) noexcept {
+-        bool ret = !(current_gpu_addr == gpu_addr && current_limit == limit);
++        bool ret = !(current_gpu_addr == gpu_addr && requested_limit == limit);
+         if (ret) {
+             Refresh(gpu_addr, limit);
+         }
+@@ -44,7 +46,15 @@ public:
+         }
+         const GPUVAddr gpu_addr = current_gpu_addr + index * sizeof(T);
+         std::pair<T, bool> result;
+-        gpu_memory.ReadBlockUnsafe(gpu_addr, std::addressof(result.first), sizeof(T));
++        // This runs for every texture and sampler of every draw. An entry within one page is
++        // contiguous in host memory, so a single page lookup replaces the generic block read.
++        const bool one_page =
++            (gpu_addr & Core::Memory::YUZU_PAGEMASK) + sizeof(T) <= Core::Memory::YUZU_PAGESIZE;
++        if (const u8* const host = one_page ? gpu_memory.GetPointer(gpu_addr) : nullptr) {
++            std::memcpy(std::addressof(result.first), host, sizeof(T));
++        } else {
++            gpu_memory.ReadBlockUnsafe(gpu_addr, std::addressof(result.first), sizeof(T));
++        }
+         if ((read_descriptors[index / 64] & (1ULL << (index % 64))) != 0) {
+             result.second = result.first != descriptors[index];
+         } else {
+@@ -59,10 +69,13 @@ public:
+ 
+     void Refresh(GPUVAddr gpu_addr, u32 limit) noexcept {
+         current_gpu_addr = gpu_addr;
+-        current_limit = limit;
++        requested_limit = limit;
++        // Garbage commands can name any limit, and sizing the table from one near 2^32 asked for
++        // gigabytes here. Callers check indices against current_limit, so reads stay inside.
++        current_limit = (std::min)(limit, MaxLimit);
+         // Mario Brothership reallocates a lot of times, so use aggressive pre-alloc sizes
+         // std::vector<T> by default uses quadratic growth, but that isn't even enough to satisfy brothership
+-        const size_t num_descriptors = ((limit + 0x80000) & (~0x7ffff)) + 1;
++        const size_t num_descriptors = ((current_limit + 0x80000) & (~0x7ffff)) + 1;
+         read_descriptors.resize(Common::DivCeil(num_descriptors, 64U));
+         ClearReadDescriptors();
+         invalidated = false;
+@@ -74,9 +87,12 @@ public:
+     std::vector<T> descriptors;
+     GPUVAddr current_gpu_addr{};
+     u32 current_limit{};
++    u32 requested_limit{}; ///< the limit as the game set it, before the clamp
+     bool invalidated{}; ///< read_descriptors is to be cleared before the next read
+ 
+ private:
++    static constexpr u32 MaxLimit = (1U << 22) - 1;
++
+     void ClearReadDescriptors() noexcept {
+         // Reserved capacity is not addressable. A later limit increase clears its new range.
+         const size_t words = (std::min)(read_descriptors.size(), size_t{current_limit} / 64 + 1);
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index afef50d88..b268ade80 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -580,7 +580,7 @@ template <class P>
+ SamplerId TextureCache<P>::GetSamplerId(u32 index, bool compute) {
+     auto& table = compute ? channel_state->compute_sampler_table : channel_state->graphics_sampler_table;
+     if (index > table.current_limit) {
+-        LOG_DEBUG(HW_GPU, "Invalid sampler index={}", index);
++        LOG_TRACE(HW_GPU, "Invalid sampler index={}", index);
+         return NULL_SAMPLER_ID;
+     }
+     auto const map_index = index | (compute ? Common::SlotId::TAGGED_VALUE : 0);
+@@ -812,7 +812,7 @@ ImageViewId TextureCache<P>::VisitImageView(u32 index, bool compute) {
+     index = Tegra::Texture::TextureHeaderIndex(index, table.current_limit,
+                                                gpu_memory->UsesNativeTiling());
+     if (index > table.current_limit) {
+-        LOG_DEBUG(HW_GPU, "Invalid image view index={}", index);
++        LOG_TRACE(HW_GPU, "Invalid image view index={}", index);
+         return NULL_IMAGE_VIEW_ID;
+     }
+     auto const map_index = index | (compute ? Common::SlotId::TAGGED_VALUE : 0);
+-- 
+2.51.0.windows.1
+

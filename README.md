@@ -6,6 +6,10 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 -->
 <!-- lang: en-GB -->
+> **pattex67 fork:** PokeDinner + Eglantine nx2 with fixes from other forks and new work for Star Fox
+> and Yoshi and the Mysterious Book. See [pattex/README.md](pattex/README.md) for the patches, the
+> Star Fox window patch and the games tested.
+
 <h1 align="center">
   <br>
   <a href="https://git.eden-emu.dev/eden-emu/eden"><img src="https://github.com/user-attachments/assets/35031845-4bfa-4916-8bf5-bc3bce67d5e2" alt="Eglantine" width="200"></a>
