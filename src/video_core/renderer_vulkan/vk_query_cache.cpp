@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <cstddef>
+#include <cstdlib>
 #include <limits>
 #include <map>
 #include <memory>
@@ -258,8 +259,25 @@ public:
             auto& resolve_buffer = buffers[resolve_buffer_index];
             VkQueryPool query_pool = bank->GetInnerPool();
             scheduler.RequestOutsideRenderPassOperationContext();
-            scheduler.Record([start, amount, base_offset, query_pool,
+            // AMD's driver appears to poll every slot under the wait flag (about 2 ms per copy
+            // of up to 256 slots), so drain the pipeline once and copy without waiting.
+            static const bool wait_for_slots = [this] {
+                const char* value = std::getenv("EDEN_NX2_QUERY_NOWAIT");
+                const bool disabled = value != nullptr && value[0] == '0';
+                return disabled || device.GetDriverID() != VK_DRIVER_ID_AMD_PROPRIETARY;
+            }();
+            scheduler.Record([start, amount, base_offset, query_pool, wait_for_slots = wait_for_slots,
                               buffer = *resolve_buffer](vk::CommandBuffer cmdbuf) {
+                if (!wait_for_slots) {
+                    static constexpr VkMemoryBarrier DRAIN_BARRIER{
+                        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+                        .pNext = nullptr,
+                        .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
+                        .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+                    };
+                    cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                                           VK_PIPELINE_STAGE_TRANSFER_BIT, 0, DRAIN_BARRIER);
+                }
                 const VkBufferMemoryBarrier copy_query_pool_barrier{
                     .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
                     .pNext = nullptr,
@@ -275,7 +293,8 @@ public:
                 cmdbuf.CopyQueryPoolResults(
                     query_pool, static_cast<u32>(start), static_cast<u32>(amount), buffer,
                     static_cast<u32>(base_offset), SamplesQueryBank::QUERY_SIZE,
-                    VK_QUERY_RESULT_WAIT_BIT | VK_QUERY_RESULT_64_BIT);
+                    (wait_for_slots ? VK_QUERY_RESULT_WAIT_BIT : VK_QUERY_RESULT_PARTIAL_BIT) |
+                        VK_QUERY_RESULT_64_BIT);
                 cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT,
                                        VK_PIPELINE_STAGE_TRANSFER_BIT, 0, copy_query_pool_barrier);
             });

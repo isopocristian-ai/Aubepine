@@ -636,8 +636,9 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
         const u64 ps = (u64{regs.pipelines[5].reserved[0] & 0xff} << 32) | regs.pipelines[5].reserved[1];
         const auto key = std::make_tuple(rt.Address(), rt.width, static_cast<u32>(rt.format), vs, ps);
         if (rt.width >= 640 && seen.size() < 600 && seen.insert(key).second) {
-            LOG_INFO(HW_GPU, "nx2 draw target {:#x} {}x{} format={:#x} vs={:#x} ps={:#x} blend={} (pairs so far {})",
-                     rt.Address(), rt.width, rt.height, static_cast<u32>(rt.format), vs, ps,
+            LOG_INFO(HW_GPU, "nx2 draw target {:#x} (device {:#x}) {}x{} format={:#x} block {:#x} vs={:#x} ps={:#x} blend={} (pairs so far {})",
+                     rt.Address(), gpu_memory->GpuToCpuAddress(rt.Address()).value_or(0), rt.width,
+                     rt.height, static_cast<u32>(rt.format), rt.tile_mode.block_height.Value(), vs, ps,
                      regs.blend.enable[0], seen.size());
         }
     }

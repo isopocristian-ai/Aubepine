@@ -48,6 +48,7 @@ private:
     Result GetWorkBufferSizeExEx(Out<u32> out_size, OpusParametersEx params);
     Result GetWorkBufferSizeForMultiStreamExEx(
         Out<u32> out_size, InLargeData<OpusMultiStreamParametersEx, BufferAttr_HipcPointer> params);
+    void OpenHardwareAudioCodecSession(HLERequestContext& ctx);
 
     Core::System& system;
     AudioCore::OpusDecoder::OpusDecoderManager impl;

@@ -518,8 +518,20 @@ void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
     }
 }
 
+
+// EDEN_NX2_GPU_WRITTEN_LISTS=0 (a measurement aid): command lists on GPU-written pages are read
+// as submitted, without waiting for their writers (Mario Kart World's trees go missing; issue
+// #390 measured that wait at about a quarter of the frame time on discrete AMD GPUs).
+static bool GpuWrittenListsHandled() {
+    static const bool handled = [] {
+        const char* value = std::getenv("EDEN_NX2_GPU_WRITTEN_LISTS");
+        return value == nullptr || value[0] != '0';
+    }();
+    return handled;
+}
+
 bool DmaPusher::IsGpuWrittenCommands(GPUVAddr address, size_t size) {
-    if (!Tegra::g_nx2_ampere.load(std::memory_order_relaxed) || size == 0) {
+    if (!Tegra::g_nx2_ampere.load(std::memory_order_relaxed) || size == 0 || !GpuWrittenListsHandled()) {
         return false;
     }
     for (GPUVAddr page = address & ~GPUVAddr{0xfff}; page < address + size; page += 0x1000) {
@@ -540,7 +552,7 @@ bool DmaPusher::ReadGpuWrittenCommands(GPUVAddr address, u32 count) {
     // FlushGpuWrittenCommands flushed whole and no GPU work wrote since are read from guest
     // memory.
     if (!Tegra::g_nx2_ampere.load(std::memory_order_relaxed) || count == 0 ||
-        rasterizer == nullptr) {
+        rasterizer == nullptr || !GpuWrittenListsHandled()) {
         return false;
     }
     const GPUVAddr end = address + u64{count} * sizeof(u32);
