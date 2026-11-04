@@ -1,0 +1,226 @@
+From 88095daecc6abde33b6444aac691732aaf48e088 Mon Sep 17 00:00:00 2001
+From: pattex67 <33281022+pattex67@users.noreply.github.com>
+Date: Wed, 4 Nov 2026 09:08:24 +0100
+Subject: [PATCH] Clean up: drop investigation diagnostics (hwacod raw words,
+ CreateNativeImage preference words, composite pitch and device, draw target
+ device and block height, EDEN_NX2_GPU_WRITTEN_LISTS), hwacod and hwopus 100
+ no longer logged as stubs, shader cache retry checks in one place
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../audio/hardware_opus_decoder_manager.cpp   |  9 ++------
+ src/core/hle/service/nx2_gsv.h                | 11 ++++-----
+ src/video_core/dma_pusher.cpp                 | 16 ++-----------
+ .../renderer_vulkan/vk_rasterizer.cpp         |  5 ++--
+ src/video_core/shader_cache.cpp               | 23 +++++++++----------
+ src/video_core/shader_cache.h                 | 12 ++++++----
+ 6 files changed, 28 insertions(+), 48 deletions(-)
+
+diff --git a/src/core/hle/service/audio/hardware_opus_decoder_manager.cpp b/src/core/hle/service/audio/hardware_opus_decoder_manager.cpp
+index 0c87a40eb..f0b4135f4 100644
+--- a/src/core/hle/service/audio/hardware_opus_decoder_manager.cpp
++++ b/src/core/hle/service/audio/hardware_opus_decoder_manager.cpp
+@@ -210,11 +210,6 @@ private:
+ 
+     void Initialize(HLERequestContext& ctx) {
+         const auto cmd = ctx.CommandBuffer();
+-        std::string words;
+-        for (u32 i = 0; i < 48; ++i) {
+-            words += fmt::format(" {:08x}", cmd[i]);
+-        }
+-        LOG_WARNING(Service_Audio, "(STUBBED) hwacod Initialize:{}", words);
+         if (m_event == nullptr) {
+             m_event = m_context.CreateEvent("hwopus:hwacod:Event");
+         }
+@@ -234,7 +229,7 @@ private:
+             .output_capacity = raw[16],
+             .event = m_event,
+         };
+-        LOG_WARNING(Service_Audio, "hwacod I/O region {:#x} size {:#x}, result ring at +{:#x} ({} entries)",
++        LOG_INFO(Service_Audio, "hwacod I/O region {:#x} size {:#x}, result ring at +{:#x} ({} entries)",
+                     shared.io_address, shared.io_size, shared.ring_offset, shared.ring_count);
+         IPC::ResponseBuilder rb{ctx, 3, 1, 1};
+         rb.Push(ResultSuccess);
+@@ -396,7 +391,7 @@ Result IHardwareOpusDecoderManager::GetWorkBufferSizeForMultiStreamExEx(
+ }
+ 
+ void IHardwareOpusDecoderManager::OpenHardwareAudioCodecSession(HLERequestContext& ctx) {
+-    LOG_WARNING(Service_Audio, "(STUBBED) hwopus 100, returning a hwacod session");
++    LOG_DEBUG(Service_Audio, "hwopus 100 opens a hwacod session");
+     IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+     rb.Push(ResultSuccess);
+     rb.PushIpcInterface<IHardwareAudioCodecSession>(ctx, system);
+diff --git a/src/core/hle/service/nx2_gsv.h b/src/core/hle/service/nx2_gsv.h
+index 0c47f323d..dbed785c8 100644
+--- a/src/core/hle/service/nx2_gsv.h
++++ b/src/core/hle/service/nx2_gsv.h
+@@ -2091,10 +2091,8 @@ private:
+         if (shown != m_shown_layout) {
+             m_shown_layout = shown;
+             LOG_INFO(Service,
+-                     "nx2:vi2 composite image {} layout {}x{} pitch {:#x} block height 2^{}, at "
+-                     "{:#x} (device {:#x}), drawn area {:#x}, crop {}x{}",
+-                     image_id, layout.width, layout.height, layout.pitch, layout.block_height_log2,
+-                     address, *device, shown_size, crop_width, crop_height);
++                     "nx2:vi2 composite image {} layout {}x{}, drawn area {:#x}, crop {}x{}",
++                     image_id, layout.width, layout.height, shown_size, crop_width, crop_height);
+         }
+         std::vector<Tegra::FramebufferConfig> layers{Tegra::FramebufferConfig{
+             .address = *device,
+@@ -3674,9 +3672,8 @@ private:
+         image.memory = w[19];
+         std::copy_n(w + 2, image.preference.size(), image.preference.begin());
+         image.size = Nx2CalculateImageLayout(w + 2).size;
+-        LOG_INFO(Service, "nx2:gsv 429 CreateNativeImage memory={} count={} size={:#x} -> id {} "
+-                 "(preference {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x})",
+-                 w[19], w[18], image.size, id, w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9]);
++        LOG_INFO(Service, "nx2:gsv 429 CreateNativeImage memory={} count={} size={:#x} -> id {}",
++                 w[19], w[18], image.size, id);
+         TipcReplyWords(ctx, {id});
+     }
+ 
+diff --git a/src/video_core/dma_pusher.cpp b/src/video_core/dma_pusher.cpp
+index 726e97ea8..9c567528a 100644
+--- a/src/video_core/dma_pusher.cpp
++++ b/src/video_core/dma_pusher.cpp
+@@ -518,20 +518,8 @@ void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
+     }
+ }
+ 
+-
+-// EDEN_NX2_GPU_WRITTEN_LISTS=0 (a measurement aid): command lists on GPU-written pages are read
+-// as submitted, without waiting for their writers (Mario Kart World's trees go missing; issue
+-// #390 measured that wait at about a quarter of the frame time on discrete AMD GPUs).
+-static bool GpuWrittenListsHandled() {
+-    static const bool handled = [] {
+-        const char* value = std::getenv("EDEN_NX2_GPU_WRITTEN_LISTS");
+-        return value == nullptr || value[0] != '0';
+-    }();
+-    return handled;
+-}
+-
+ bool DmaPusher::IsGpuWrittenCommands(GPUVAddr address, size_t size) {
+-    if (!Tegra::g_nx2_ampere.load(std::memory_order_relaxed) || size == 0 || !GpuWrittenListsHandled()) {
++    if (!Tegra::g_nx2_ampere.load(std::memory_order_relaxed) || size == 0) {
+         return false;
+     }
+     for (GPUVAddr page = address & ~GPUVAddr{0xfff}; page < address + size; page += 0x1000) {
+@@ -552,7 +540,7 @@ bool DmaPusher::ReadGpuWrittenCommands(GPUVAddr address, u32 count) {
+     // FlushGpuWrittenCommands flushed whole and no GPU work wrote since are read from guest
+     // memory.
+     if (!Tegra::g_nx2_ampere.load(std::memory_order_relaxed) || count == 0 ||
+-        rasterizer == nullptr || !GpuWrittenListsHandled()) {
++        rasterizer == nullptr) {
+         return false;
+     }
+     const GPUVAddr end = address + u64{count} * sizeof(u32);
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index a164b1283..d8329a74a 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -636,9 +636,8 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
+         const u64 ps = (u64{regs.pipelines[5].reserved[0] & 0xff} << 32) | regs.pipelines[5].reserved[1];
+         const auto key = std::make_tuple(rt.Address(), rt.width, static_cast<u32>(rt.format), vs, ps);
+         if (rt.width >= 640 && seen.size() < 600 && seen.insert(key).second) {
+-            LOG_INFO(HW_GPU, "nx2 draw target {:#x} (device {:#x}) {}x{} format={:#x} block {:#x} vs={:#x} ps={:#x} blend={} (pairs so far {})",
+-                     rt.Address(), gpu_memory->GpuToCpuAddress(rt.Address()).value_or(0), rt.width,
+-                     rt.height, static_cast<u32>(rt.format), rt.tile_mode.block_height.Value(), vs, ps,
++            LOG_INFO(HW_GPU, "nx2 draw target {:#x} {}x{} format={:#x} vs={:#x} ps={:#x} blend={} (pairs so far {})",
++                     rt.Address(), rt.width, rt.height, static_cast<u32>(rt.format), vs, ps,
+                      regs.blend.enable[0], seen.size());
+         }
+     }
+diff --git a/src/video_core/shader_cache.cpp b/src/video_core/shader_cache.cpp
+index f9d990d6c..431994339 100644
+--- a/src/video_core/shader_cache.cpp
++++ b/src/video_core/shader_cache.cpp
+@@ -117,9 +117,7 @@ bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) try {
+             return false;
+         }
+         const ShaderInfo* shader_info{TryGet(*cpu_shader_addr)};
+-        if (!shader_info && native && CaptureRetries().contains(*cpu_shader_addr) &&
+-            std::chrono::steady_clock::now() - CaptureRetries()[*cpu_shader_addr].last <
+-                std::chrono::milliseconds{100}) {
++        if (!shader_info && native && TriedRecently(*cpu_shader_addr)) {
+             // Still uploading, tried less than 100 ms ago: skip the draw without capturing again.
+             maxwell3d->GetNativeMacroEngine().native_execution_failed = true;
+             last_shaders_valid = false;
+@@ -224,10 +222,8 @@ const ShaderInfo* ShaderCache::ComputeShader() {
+     if (const ShaderInfo* const shader = TryGet(*cpu_shader_addr)) {
+         return shader;
+     }
+-    if (const auto retry = CaptureRetries().find(*cpu_shader_addr);
+-        retry != CaptureRetries().end() &&
+-        std::chrono::steady_clock::now() - retry->second.last < std::chrono::milliseconds{100}) {
+-        return nullptr; // tried less than 100 ms ago, as for graphics programs
++    if (TriedRecently(*cpu_shader_addr)) {
++        return nullptr; // still uploading, as for graphics programs
+     }
+     try {
+         RethrowIfRejected(*cpu_shader_addr);
+@@ -266,17 +262,20 @@ std::unordered_map<VAddr, ShaderCache::CaptureRetry>& ShaderCache::CaptureRetrie
+     return retries;
+ }
+ 
+-bool ShaderCache::MayStillBeWritten(const Shader::Exception& error) {
+-    const std::string_view what{error.what()};
+-    return what.find("outside capture bounds") != std::string_view::npos ||
+-           what.find("unsupported native opcode") != std::string_view::npos;
++// True when a capture of the program failed as incomplete less than 100 ms ago.
++bool ShaderCache::TriedRecently(VAddr addr) {
++    const auto retry = CaptureRetries().find(addr);
++    return retry != CaptureRetries().end() &&
++           std::chrono::steady_clock::now() - retry->second.last < std::chrono::milliseconds{100};
+ }
+ 
+ // A program the game is still uploading reads as zeros, as older data at that address (an opcode
+ // we do not know at its start) or runs into other data. Returns true while such a failure should be
+ // tried again (for a minute after the first one), false once it should be rejected for good.
+ bool ShaderCache::RetryLater(VAddr addr, const Shader::Exception& error) {
+-    const bool incomplete = MayStillBeWritten(error);
++    const std::string_view what{error.what()};
++    const bool incomplete = what.find("outside capture bounds") != std::string_view::npos ||
++                            what.find("unsupported native opcode") != std::string_view::npos;
+     const auto now = std::chrono::steady_clock::now();
+     auto& retry = CaptureRetries()[addr];
+     if (retry.first == std::chrono::steady_clock::time_point{}) {
+diff --git a/src/video_core/shader_cache.h b/src/video_core/shader_cache.h
+index a74ca30a3..a21f089ee 100644
+--- a/src/video_core/shader_cache.h
++++ b/src/video_core/shader_cache.h
+@@ -6,15 +6,14 @@
+ 
+ #pragma once
+ 
+-#include <chrono>
+-#include <unordered_map>
+-
+ #include <array>
+ #include <atomic>
++#include <chrono>
+ #include <exception>
+ #include <memory>
+ #include <mutex>
+ #include <span>
++#include <unordered_map>
+ #include "common/container/unordered_map.h"
+ #include "shader_recompiler/exception.h"
+ #include <utility>
+@@ -164,9 +163,12 @@ private:
+     /// Whether a native program at this address was rejected.
+     bool IsRejected(VAddr addr);
+     /// Remembers the exception being handled as this address's rejection.
+-    bool RetryLater(VAddr addr, const Shader::Exception& error);
+-    static bool MayStillBeWritten(const Shader::Exception& error);
+     void RememberRejection(VAddr addr);
++    /// Whether a failed capture may be a program still being uploaded, to try again later.
++    bool RetryLater(VAddr addr, const Shader::Exception& error);
++    /// Whether such a capture failed less than 100 ms ago.
++    bool TriedRecently(VAddr addr);
++    /// Failed captures of programs that may still be uploading, per program address.
+     struct CaptureRetry {
+         std::chrono::steady_clock::time_point first{};
+         std::chrono::steady_clock::time_point last{};
+-- 
+2.51.0.windows.1
+
