@@ -271,11 +271,14 @@ bool ShaderCache::TriedRecently(VAddr addr) {
 
 // A program the game is still uploading reads as zeros, as older data at that address (an opcode
 // we do not know at its start) or runs into other data. Returns true while such a failure should be
-// tried again (for a minute after the first one), false once it should be rejected for good.
+// tried again (for a minute after the first one), false once it should be rejected for good. Older
+// data can also fail for any reason at the very first instruction (Yoshi: random bytes read as an
+// instruction using reserved registers).
 bool ShaderCache::RetryLater(VAddr addr, const Shader::Exception& error) {
     const std::string_view what{error.what()};
     const bool incomplete = what.find("outside capture bounds") != std::string_view::npos ||
-                            what.find("unsupported native opcode") != std::string_view::npos;
+                            what.find("unsupported native opcode") != std::string_view::npos ||
+                            what.find("instruction 0x0:") != std::string_view::npos;
     const auto now = std::chrono::steady_clock::now();
     auto& retry = CaptureRetries()[addr];
     if (retry.first == std::chrono::steady_clock::time_point{}) {

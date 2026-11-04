@@ -82,9 +82,16 @@ inline RegisterPressure PrepareRegisterPressure(const Instruction& input, u32 re
     case 0x223: operand(16); operand(24); operand(32); operand(64); break; // FFMA
     case 0x805: operand(16, 2); break;
     case 0x308: operand(16); operand(32); break;
+    // F2F, F2I, I2F, FRND with a register source; S2R (Kirby Air Riders race programs).
+    case 0x304: case 0x305: case 0x306: case 0x307: case 0x245: operand(16); operand(32); break;
+    case 0x845: case 0xa45: case 0xc45: operand(16); break; // I2FP immediate, cbuf, UR
+    case 0x919: operand(16); break;
+    case 0x202: operand(16); operand(32); break; // MOV
     case 0x433: case 0x633: operand(16); operand(24); break;
     case 0x233: operand(16); operand(24); operand(32); break;
-    case 0x810: case 0x812: case 0x824: case 0x831: case 0x424: case 0x624:
+    case 0x217: operand(16); operand(24); operand(32); break; // IMNMX
+    case 0x817: case 0xa17: case 0xc17: operand(16); operand(24); break;
+    case 0x810: case 0x812: case 0x824: case 0xa24: case 0x831: case 0x424: case 0x624:
         operand(16); operand(24); operand(64); break;
     case 0x230: case 0x231: case 0x211: case 0x224:
         operand(16); operand(24); operand(32); operand(64); break;
@@ -109,13 +116,33 @@ inline RegisterPressure PrepareRegisterPressure(const Instruction& input, u32 re
     }
     case 0x387: case 0x983:
         operand(opcode == 0x387 ? 32 : 16); operand(24); break;
-    case 0x981: case 0x986: {
+    case 0x381: case 0x386: case 0x981: case 0x986: { // 0x381/0x386: LDG/STG with a descriptor UR (Kirby)
         const u32 width = input.Bits(73, 3), count = width == 6 ? 4 : width == 5 ? 2 : 1;
-        operand(opcode == 0x981 ? 16 : 32, count);
+        operand(opcode == 0x986 || opcode == 0x386 ? 32 : 16, count);
         operand(24, input.Bits(72, 1) ? 2 : 1); break;
     }
-    default:
-        result.valid = false; return result;
+    default: {
+        // Plain ALU ops by encoding form (bits 9-11), as LowerToMaxwellWith's operand decoder
+        // reads them: b is R32 in form 1; with three sources it is R64 in forms 2, 3 and 7 and c
+        // is R64 in forms 1, 4, 5 and 6. Other slots hold an immediate, cbuf or UR (two-source
+        // ops such as FADD take theirs from the c slot in forms 2, 3 and 7). ISETP/FSETP write
+        // no register.
+        const u32 family = opcode & 0x1ff, form = input.Bits(9, 3);
+        const bool predicate_only = family == 0x00c || family == 0x00b;
+        const bool two = predicate_only || family == 0x020 || family == 0x021 || family == 0x009 ||
+                         family == 0x008 || family == 0x007;
+        const bool three = family == 0x023 || family == 0x012 || family == 0x010 || family == 0x024 ||
+                           family == 0x019 || family == 0x016 || family == 0x011;
+        const bool upper_form = form == 2 || form == 3 || form == 7;
+        if ((!two && !three) || form == 0 || (two && upper_form && family != 0x021)) {
+            result.valid = false; return result;
+        }
+        if (!predicate_only) operand(16);
+        operand(24);
+        if (form == 1) operand(32);
+        if (three) operand(64);
+        break;
+    }
     }
     std::array<bool, 256> used{};
     std::array<bool, 64> groups{};
@@ -241,7 +268,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
         bool requires_shadow = false;
         for (u32 bit : {16U, 24U, 32U, 64U}) {
             if (bit == 32 && insn.Bits(9, 3) != 1 && opcode != 0xb60 && opcode != 0xb66 && opcode != 0xf66 &&
-                opcode != 0x988) continue;
+                opcode != 0x988 && opcode != 0x986) continue;
             const u32 reg = insn.Bits(bit, 8);
             if (reg >= shadow_boundary && reg < 255) requires_shadow = true;
         }
@@ -1931,8 +1958,9 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
         }
         case 0x305: case 0xb05: case 0xd05: { // F2I NTZ, register/constant-buffer/uniform source
             const u32 mode = insn.words[2] & ~(opcode == 0xd05 ? 0x08000000U : 0U);
-            // F16 source: bit 72 signs the result as in the other forms, bits 60-61 pick H0/H1.
-            const bool half = opcode == 0x305 && (mode & ~0x100U) == 0x0010f000;
+            // F16 source: bit 72 signs the result as in the other forms, bits 60-61 pick H0/H1,
+            // bits 78-79 round (Yoshi's mission: F2I.S32.F16 round to nearest).
+            const bool half = opcode == 0x305 && (mode & ~0xc100U) == 0x00103000;
             const bool small = mode == 0x00212800;
             // 32-bit result: bits 78-79 round (RN/RM/RP/RZ, Maxwell's order), bit 80 FTZ.
             const bool word = (mode & ~0x1c100U) == 0x00203000;
