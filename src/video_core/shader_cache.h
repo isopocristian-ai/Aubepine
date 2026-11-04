@@ -16,6 +16,7 @@
 #include <mutex>
 #include <span>
 #include "common/container/unordered_map.h"
+#include "shader_recompiler/exception.h"
 #include <utility>
 #include <vector>
 
@@ -163,6 +164,9 @@ private:
     /// Whether a native program at this address was rejected.
     bool IsRejected(VAddr addr);
     /// Remembers the exception being handled as this address's rejection.
+    bool RetryLater(VAddr addr, const Shader::Exception& error);
+    static bool MayStillBeWritten(const Shader::Exception& error);
+    bool WaitForNewCode(VAddr addr, GPUVAddr gpu_addr, const Shader::Exception& error);
     void RememberRejection(VAddr addr);
     struct CaptureRetry {
         std::chrono::steady_clock::time_point first{};
