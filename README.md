@@ -42,6 +42,8 @@ on games that did not run elsewhere.</h4>
   forms); fewer rejected shaders than upstream.
 - **Mario Kart World**: Nemyu's fixes for the 2162-0001 title-screen abort and its stability guards,
   and the tour movie fixed on AMD GPUs.
+- GPU memory reused at the same addresses is mapped again when its pages changed (from
+  [AMDEGL](https://github.com/Purebuilt/AMDEGL); fixes stale reads behind Mario Kart World freezes).
 - Metroid Prime 4 loose RomFS dumps load, and several other fixes listed in
   [pattex/README.md](pattex/README.md).
 
@@ -76,7 +78,7 @@ adjustment.
 
 Aubépine stands on the work of the Eden, Yuzu and Sudachi developers, Eglantine (Djihads80 and its
 contributors), PokeDinner (Franseven), Nemyu (Uesleizito Zin), Selevet Eglantine (sylvieistaken),
-MythosOfs and monkeefunnee. The fork's own changes were made with an AI assistant (Claude Opus 5.5).
+MythosOfs, monkeefunnee and Purebuilt (AMDEGL). The fork's own changes were made with an AI assistant (Claude Opus 5.5).
 
 ## License
 

@@ -25,6 +25,8 @@ files (`git am patches/*.patch` on PokeDinner 216b5034c reproduces the branch):
 | 0008 | **Yoshi docked**: GPU-only regions backed whole for this game (backed as written, two shaders read as zeros and it aborted after the intro), Eglantine PR #345 (page table block id overflow), TLD4.B 0x364, 0xf63 with an offset, SURED with any operation. |
 | 0009 | **Shader cache**: native programs that read as incomplete (zeros, branches past the capture) are retried every 100 ms for a minute instead of being rejected for good (Yoshi docked streams shaders in). |
 | 0010 | **Shader cache**: the same retries for compute programs, and any unknown opcode is retried for a minute before being rejected; the first read that looks unwritten waits up to 100 ms for the code. Yoshi docked aborted (2162-0001) after the Bowser Jr. movie: a compute program the game had not written yet was dropped, and the game read back its missing output. |
+| 0011 | **Yoshi first mission**: shader lowering for constant LEA without a carry out, with a negated constant or with a high source and carry; LDG with a descriptor pair; USHF under a UPn guard; SHF.U64.HI; TLD.LZ with a uniform-register handle (0xf66). Drops 0010's 100 ms wait (it never caught a program) and throttles compute retries to one every 100 ms. The mission is still black: more instructions behind these (opcodes 906 and fae, UIADD3 with a carry, programs that use the lowering's scratch registers). |
+| 0012 | **GPU memory** (from [Purebuilt/AMDEGL](https://github.com/Purebuilt/AMDEGL) f6fba4f): when the game frees GPU memory and reuses the same addresses, the SMMU range reused for them still pointed at the old pages, so the GPU could read other data (Mario Kart World freezes there). Pages whose memory changed are mapped again; `EDEN_NX2_REFRESH_DEVICE_RANGES=0` turns it off. |
 
 Patches 0004 to 0006 are this fork's own work and only touch a few files
 (`lower_to_maxwell.h`, `hardware_opus_decoder_manager.*`, `nx2_audio_device_manager.h`); they should
@@ -54,7 +56,7 @@ the display then reads the right image with the right layout.
 ## Credits
 
 Eden, Yuzu and Sudachi developers; Eglantine (Djihads80 and its contributors); PokeDinner (Franseven);
-Nemyu (Uesleizito Zin); Selevet Eglantine (sylvieistaken); MythosOfs; monkeefunnee. Licence: GPLv3,
+Nemyu (Uesleizito Zin); Selevet Eglantine (sylvieistaken); MythosOfs; monkeefunnee; Purebuilt (AMDEGL). Licence: GPLv3,
 as Eglantine.
 
 ---
