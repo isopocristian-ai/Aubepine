@@ -5,7 +5,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <chrono>
-#include <thread>
 #include <algorithm>
 #include <cstring>
 #include <functional>
@@ -133,7 +132,7 @@ bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) try {
             last_shaders_valid = false;
             return false;
         }
-        for (bool waited = false; !shader_info;) {
+        if (!shader_info) {
             const u32 start_address{native ? 0 : shader_config.offset};
             try {
                 // Native programs are lowered while the environment is built (once: the
@@ -155,10 +154,6 @@ bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) try {
                 // A program the game is still uploading reads as zeros or runs into other data
                 // (Yoshi docked streams shaders in): try it again at most every 100 ms for a
                 // minute instead of rejecting it for good.
-                if (native && !waited && WaitForNewCode(*cpu_shader_addr, shader_addr, error)) {
-                    waited = true;
-                    continue;
-                }
                 if (native && RetryLater(*cpu_shader_addr, error)) {
                     maxwell3d->GetNativeMacroEngine().native_execution_failed = true;
                     last_shaders_valid = false;
@@ -229,28 +224,27 @@ const ShaderInfo* ShaderCache::ComputeShader() {
     if (const ShaderInfo* const shader = TryGet(*cpu_shader_addr)) {
         return shader;
     }
-    for (bool waited = false;;) {
-        try {
-            RethrowIfRejected(*cpu_shader_addr);
-            ComputeEnvironment env{*kepler_compute, *gpu_memory, program_base, qmd.program_start,
-                                   {}, native_tensor_full_by_default};
-            const ShaderInfo* const shader = MakeShaderInfo(env, *cpu_shader_addr);
-            if (CaptureRetries().erase(*cpu_shader_addr) != 0) {
-                LOG_INFO(HW_GPU, "Native compute program {:#x} captured after earlier incomplete reads",
-                         shader_addr);
-            }
-            return shader;
-        } catch (const Shader::Exception& error) {
-            if (!waited && WaitForNewCode(*cpu_shader_addr, shader_addr, error)) {
-                waited = true;
-                continue;
-            }
-            // Streamed-in compute programs too: this dispatch is lost, the next ones may run.
-            if (!RetryLater(*cpu_shader_addr, error)) {
-                RememberRejection(*cpu_shader_addr);
-            }
-            throw;
+    if (const auto retry = CaptureRetries().find(*cpu_shader_addr);
+        retry != CaptureRetries().end() &&
+        std::chrono::steady_clock::now() - retry->second.last < std::chrono::milliseconds{100}) {
+        return nullptr; // tried less than 100 ms ago, as for graphics programs
+    }
+    try {
+        RethrowIfRejected(*cpu_shader_addr);
+        ComputeEnvironment env{*kepler_compute, *gpu_memory, program_base, qmd.program_start, {},
+                               native_tensor_full_by_default};
+        const ShaderInfo* const shader = MakeShaderInfo(env, *cpu_shader_addr);
+        if (CaptureRetries().erase(*cpu_shader_addr) != 0) {
+            LOG_INFO(HW_GPU, "Native compute program {:#x} captured after earlier incomplete reads",
+                     shader_addr);
         }
+        return shader;
+    } catch (const Shader::Exception& error) {
+        // Streamed-in compute programs too: this dispatch is lost, the next ones may run.
+        if (!RetryLater(*cpu_shader_addr, error)) {
+            RememberRejection(*cpu_shader_addr);
+        }
+        throw;
     }
 }
 
@@ -276,39 +270,6 @@ bool ShaderCache::MayStillBeWritten(const Shader::Exception& error) {
     const std::string_view what{error.what()};
     return what.find("outside capture bounds") != std::string_view::npos ||
            what.find("unsupported native opcode") != std::string_view::npos;
-}
-
-// The first time a program reads as unwritten (zeros, an unknown opcode at its very start or a
-// branch out of it), wait up to 100 ms for its code to change: the game's CPU may still be writing
-// it while the GPU thread has already reached the draw or dispatch (Yoshi docked aborts when a
-// compute pass it reads back from never ran). Other unknown opcodes are not waited for.
-bool ShaderCache::WaitForNewCode(VAddr addr, GPUVAddr gpu_addr, const Shader::Exception& error) {
-    const std::string_view what{error.what()};
-    const bool unwritten = what.find("outside capture bounds") != std::string_view::npos ||
-                           what.find("[op 000 00000000 00000000") != std::string_view::npos ||
-                           what.find("instruction 0x0: unsupported") != std::string_view::npos;
-    if (!unwritten || CaptureRetries().contains(addr)) {
-        return false;
-    }
-    constexpr size_t size = 0x4000;
-    std::vector<u8> before(size);
-    std::vector<u8> now(size);
-    gpu_memory->ReadBlockUnsafe(gpu_addr, before.data(), size);
-    const auto start = std::chrono::steady_clock::now();
-    while (std::chrono::steady_clock::now() - start < std::chrono::milliseconds{100}) {
-        std::this_thread::sleep_for(std::chrono::microseconds{500});
-        gpu_memory->ReadBlockUnsafe(gpu_addr, now.data(), size);
-        if (now != before) {
-            LOG_INFO(HW_GPU, "Native program {:#x} changed {} us after an incomplete read", gpu_addr,
-                     std::chrono::duration_cast<std::chrono::microseconds>(
-                         std::chrono::steady_clock::now() - start)
-                         .count());
-            return true;
-        }
-    }
-    LOG_INFO(HW_GPU, "Native program {:#x} did not change within 100 ms of an incomplete read",
-             gpu_addr);
-    return false;
 }
 
 // A program the game is still uploading reads as zeros, as older data at that address (an opcode

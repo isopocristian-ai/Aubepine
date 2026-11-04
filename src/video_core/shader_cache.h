@@ -166,7 +166,6 @@ private:
     /// Remembers the exception being handled as this address's rejection.
     bool RetryLater(VAddr addr, const Shader::Exception& error);
     static bool MayStillBeWritten(const Shader::Exception& error);
-    bool WaitForNewCode(VAddr addr, GPUVAddr gpu_addr, const Shader::Exception& error);
     void RememberRejection(VAddr addr);
     struct CaptureRetry {
         std::chrono::steady_clock::time_point first{};
