@@ -360,11 +360,22 @@ GraphicsPipeline::GraphicsPipeline(
     }};
     // Before the build, which may run on a worker: the modules are shared with the reuse cache and stay alive.
     configure_func = ConfigureFunc(*spv_modules, stage_infos);
+    build_task = std::move(func);
     if (worker_thread) {
-        worker_thread->QueueWork(std::move(func));
+        worker_thread->QueueWork([this] { RunBuild(); });
     } else {
-        func();
+        RunBuild();
     }
+}
+
+void GraphicsPipeline::RunBuild() {
+    // After zortos293/Lichii f8f29b5769: a draw or dispatch that waits on a pipeline still queued
+    // behind hundreds of builds (Kirby Air Riders races) builds it itself on the scheduler thread.
+    if (build_claimed.exchange(true)) {
+        return;
+    }
+    build_task();
+    build_task = nullptr;
 }
 
 void GraphicsPipeline::AddTransition(GraphicsPipeline* transition) {
@@ -683,8 +694,9 @@ bool GraphicsPipeline::ConfigureDraw(const RescalingPushConstant& rescaling,
 
     scheduler.RequestRenderpass(texture_cache.GetFramebuffer());
     if (!is_built.load(std::memory_order::relaxed)) {
-        // Wait for the pipeline to be built
+        // Wait for the pipeline to be built, building it here if no worker has started it
         scheduler.Record([this](vk::CommandBuffer) {
+            RunBuild();
             std::unique_lock lock{build_mutex};
             build_condvar.wait(lock, [this] { return is_built.load(std::memory_order::relaxed); });
         });

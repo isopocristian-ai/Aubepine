@@ -298,13 +298,29 @@ Node SiblingFromNephew(Node uncle, Node nephew) noexcept {
 }
 
 bool AreOrdered(Node left_sibling, Node right_sibling) noexcept {
+    if (left_sibling == right_sibling) {
+        return false;
+    }
+    // Walk forward from both siblings in step: the first walk to meet the other sibling or the
+    // end decides, so huge statement lists (Kirby Air Riders compute) aren't scanned to the end
+    // for every goto. After zortos293/Lichii f8f29b5769.
     const Node end{right_sibling->up->children.end()};
-    for (auto it = right_sibling; it != end; ++it) {
-        if (it == left_sibling) {
+    for (Node from_left{left_sibling}, from_right{right_sibling};;) {
+        ++from_right;
+        if (from_right == left_sibling) {
+            return false;
+        }
+        if (from_right == end) {
+            return true;
+        }
+        ++from_left;
+        if (from_left == right_sibling) {
+            return true;
+        }
+        if (from_left == end) {
             return false;
         }
     }
-    return true;
 }
 
 bool NeedsLift(Node goto_stmt, Node label_stmt) noexcept {
