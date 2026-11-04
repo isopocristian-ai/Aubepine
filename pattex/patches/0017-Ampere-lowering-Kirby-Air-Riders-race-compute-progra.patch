@@ -1,0 +1,98 @@
+From 5e516006fd7be8624c3c1cfd9aa8e3ae8a24ad8a Mon Sep 17 00:00:00 2001
+From: pattex67 <33281022+pattex67@users.noreply.github.com>
+Date: Wed, 4 Nov 2026 19:44:08 +0100
+Subject: [PATCH 17/19] Ampere lowering: Kirby Air Riders race compute programs
+
+- UIADD3 with three sources and two UPn carry outputs: set in P(6-n), saved in R253 and merged into R239.
+- FRND.F16 (formats 1/1) as Maxwell F2F.F16.F16 with rounding.
+- Shadow copies for ISETP (0x20c/0x80c/0xa0c), IADD3 immediate (0x810), FMUL, FADD and FFMA that use R216 and up.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../frontend/ampere/lower_to_maxwell.h        | 36 ++++++++++++++-----
+ 1 file changed, 28 insertions(+), 8 deletions(-)
+
+diff --git a/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h b/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
+index 218c435e8..d4e9d82d6 100644
+--- a/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
++++ b/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
+@@ -76,12 +76,15 @@ inline RegisterPressure PrepareRegisterPressure(const Instruction& input, u32 re
+     const u32 opcode = input.Bits(0, 12);
+     switch (opcode) {
+     case 0x802: case 0xa02: case 0xb08: case 0xd08: operand(16); break;
+-    case 0x804: operand(24); break;
++    case 0x804: case 0x80c: case 0xa0c: operand(24); break; // 0x80c/0xa0c: ISETP immediate/cbuf
++    case 0x20c: operand(24); operand(32); break;
++    case 0x220: case 0x221: operand(16); operand(24); operand(32); break; // FMUL, FADD (Kirby)
++    case 0x223: operand(16); operand(24); operand(32); operand(64); break; // FFMA
+     case 0x805: operand(16, 2); break;
+     case 0x308: operand(16); operand(32); break;
+     case 0x433: case 0x633: operand(16); operand(24); break;
+     case 0x233: operand(16); operand(24); operand(32); break;
+-    case 0x812: case 0x824: case 0x831: case 0x424: case 0x624:
++    case 0x810: case 0x812: case 0x824: case 0x831: case 0x424: case 0x624:
+         operand(16); operand(24); operand(64); break;
+     case 0x230: case 0x231: case 0x211: case 0x224:
+         operand(16); operand(24); operand(32); operand(64); break;
+@@ -2596,11 +2599,15 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+             }
+             break;
+         }
+-        case 0x307: case 0xb07: { // FRND.F32, round to an integral floating-point value (0xb07: cbuf)
+-            if (insn.Bits(75, 2) != 2 || insn.Bits(84, 2) != 2 || insn.Bits(81, 3) ||
+-                insn.Bits(86, 6)) return fail(index, "native floating round format");
++        case 0x307: case 0xb07: { // FRND.F32/.F16, round to an integral floating-point value (0xb07: cbuf)
++            // Bits 75-76 and 84-85 are the formats (1 F16, 2 F32), as Maxwell F2F's 8-9 and 10-11.
++            // FRND.F16 (Kirby Air Riders) rounds the low half; the result's high half is zero.
++            const u32 format = insn.Bits(75, 2);
++            if ((format != 1 && format != 2) || insn.Bits(84, 2) != format || insn.Bits(81, 3) ||
++                insn.Bits(86, 6) || (format == 1 && (opcode == 0xb07 || insn.Bits(60, 2))))
++                return fail(index, "native floating round format");
+             if (opcode == 0xb07 && !valid_cbuf()) return fail(index, "native constant buffer address");
+-            emit(base(opcode == 0xb07 ? 0x4ca8000000000000ULL : 0x5ca8000000000000ULL) | (u64{2} << 8) | (u64{2} << 10) |
++            emit(base(opcode == 0xb07 ? 0x4ca8000000000000ULL : 0x5ca8000000000000ULL) | (u64{format} << 8) | (u64{format} << 10) |
+                  (opcode == 0xb07 ? cbuf() : u64{insn.Bits(32, 8)} << 20) | (u64{8 + insn.Bits(78, 2)} << 39) |
+                  (u64{insn.Bits(80, 1)} << 44) | (u64{insn.Bits(63, 1)} << 45) |
+                  (u64{insn.Bits(62, 1)} << 49));
+@@ -3258,7 +3265,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+                 (insn.Bits(64, 8) != 255 || insn.Bits(84, 3) != 7 || negate_a || negate_b || negate_c ||
+                  (extended && insn.Bits(77, 4) != 15))) {
+                 const u32 first_output = insn.Bits(81, 3), second_output = insn.Bits(84, 3);
+-                if (rewritten_uniform || guarded_uniform || insn.Bits(73, 1) || insn.Bits(76, 1) ||
++                if (guarded_uniform || insn.Bits(73, 1) || insn.Bits(76, 1) ||
+                     (first_output != 7 && first_output == second_output) ||
+                     (!extended && (insn.Bits(77, 4) != 15 || insn.Bits(87, 4) != 15)) ||
+                     (opcode == 0x210 && (insn.words[1] & ~0x800000ffU)) || (opcode == 0xa10 && insn.Bits(62, 1)) ||
+@@ -3293,15 +3300,28 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+                     accumulate(250);
+                 }
+                 if (dest != 255) emit(base(0x5c98000000000000ULL) | (u64{253} << 20) | (u64{15} << 39));
++                // UIADD3 (Kirby Air Riders: two UPn carry outputs): each UPn is set in P(6-n), whose
++                // guest value waits in R253 (free once the sum is written), then merged into R239.
++                u32 uniform_mask = 0;
++                if (rewritten_uniform) {
++                    for (const u32 output : {first_output, second_output})
++                        if (output != 7) uniform_mask |= 1U << (6 - output);
++                    if (uniform_mask) emit(0x38e8000000070000ULL | 253 | (u64{255} << 8) | (u64{uniform_mask} << 20));
++                }
+                 // An output that is also the guard predicate is written last.
+                 const bool guard_first = (native_predicate & 7) != 7 && first_output == (native_predicate & 7);
+                 for (const u32 output : {guard_first ? 1U : 0U, guard_first ? 0U : 1U}) {
+-                    const u32 target = output ? second_output : first_output;
++                    u32 target = output ? second_output : first_output;
+                     if (target == 7) continue;
++                    if (rewritten_uniform) target = 6 - target;
+                     mov_imm(250, output + 1);
+                     emit(0x5b60000000000000ULL | predicate | 7 | (u64{target} << 3) | (u64{254} << 8) |
+                          (u64{250} << 20) | (u64{7} << 39) | (u64{6} << 49));
+                 }
++                if (uniform_mask) {
++                    emit(0x38e8000000070000ULL | 239 | (u64{239} << 8) | (u64{uniform_mask} << 20));
++                    emit(0x38f0000000070000ULL | (u64{253} << 8) | (u64{uniform_mask} << 20));
++                }
+                 break;
+             }
+             if ((opcode == 0xa10 || opcode == 0xc10) && insn.Bits(81, 3) != 7) { // cbuf or uniform b
+-- 
+2.51.0.windows.1
+

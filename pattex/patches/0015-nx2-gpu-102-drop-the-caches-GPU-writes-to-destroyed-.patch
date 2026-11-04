@@ -1,0 +1,36 @@
+From db1276c397553ffe9404de1e108a0f84a8fc28d2 Mon Sep 17 00:00:00 2001
+From: pattex67 <33281022+pattex67@users.noreply.github.com>
+Date: Wed, 4 Nov 2026 19:44:06 +0100
+Subject: [PATCH 15/15] nx2:gpu 102: drop the caches' GPU writes to destroyed
+ memory before the game reuses it as heap (Yoshi's Unreal allocator found
+ overwritten block headers and aborted, 2162-0001)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/core/hle/service/nx2_gsv.h | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/src/core/hle/service/nx2_gsv.h b/src/core/hle/service/nx2_gsv.h
+index dbed785c8..fc4af2544 100644
+--- a/src/core/hle/service/nx2_gsv.h
++++ b/src/core/hle/service/nx2_gsv.h
+@@ -587,6 +587,16 @@ private:
+                       address, size, w[3]);
+             if (size != 0) {
+                 Nvidia::Devices::Nx2GpuMemoryRegistry::Get().Unmap(address, size);
++                // The caches may still hold GPU writes to this memory and copy them back on a
++                // later CPU read, over the heap data the game puts there: Yoshi's Unreal allocator
++                // found a block header overwritten and aborted (2162-0001). Drop them once the GPU
++                // thread has run the work queued so far, before the slot event lets the game go on.
++                if (const auto device =
++                        Nvidia::Devices::Nx2GpuMemoryRegistry::Get().DeviceAddressOf(address)) {
++                    system.GPU().RunInOrder([&gpu = system.GPU(), device = *device, size] {
++                        gpu.InvalidateRegion(device, size);
++                    });
++                }
+             }
+             if (size == 0x2000) {
+                 Tegra::Nx2RemoveSemaphoreRegion(address);
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,195 @@
+From b840292f2619d391782daa823879d985ae3ca03c Mon Sep 17 00:00:00 2001
+From: pattex67 <33281022+pattex67@users.noreply.github.com>
+Date: Wed, 4 Nov 2026 19:44:09 +0100
+Subject: [PATCH 19/19] Vulkan: a draw or dispatch builds the pipeline it waits
+ on; faster goto ordering
+
+After zortos293/Lichii f8f29b5769 (#71, own implementation): a pipeline still queued behind hundreds
+of driver builds (Kirby Air Riders races) is built by the scheduler thread that needs it, whichever
+of it and the worker starts first. AreOrdered walks from both siblings at once.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../maxwell/structured_control_flow.cpp       | 22 ++++++++++++++++---
+ .../renderer_vulkan/vk_compute_pipeline.cpp   | 18 ++++++++++++---
+ .../renderer_vulkan/vk_compute_pipeline.h     |  6 +++++
+ .../renderer_vulkan/vk_graphics_pipeline.cpp  | 18 ++++++++++++---
+ .../renderer_vulkan/vk_graphics_pipeline.h    |  6 +++++
+ 5 files changed, 61 insertions(+), 9 deletions(-)
+
+diff --git a/src/shader_recompiler/frontend/maxwell/structured_control_flow.cpp b/src/shader_recompiler/frontend/maxwell/structured_control_flow.cpp
+index 50cff52f8..c985dbfce 100644
+--- a/src/shader_recompiler/frontend/maxwell/structured_control_flow.cpp
++++ b/src/shader_recompiler/frontend/maxwell/structured_control_flow.cpp
+@@ -298,13 +298,29 @@ Node SiblingFromNephew(Node uncle, Node nephew) noexcept {
+ }
+ 
+ bool AreOrdered(Node left_sibling, Node right_sibling) noexcept {
++    if (left_sibling == right_sibling) {
++        return false;
++    }
++    // Walk forward from both siblings in step: the first walk to meet the other sibling or the
++    // end decides, so huge statement lists (Kirby Air Riders compute) aren't scanned to the end
++    // for every goto. After zortos293/Lichii f8f29b5769.
+     const Node end{right_sibling->up->children.end()};
+-    for (auto it = right_sibling; it != end; ++it) {
+-        if (it == left_sibling) {
++    for (Node from_left{left_sibling}, from_right{right_sibling};;) {
++        ++from_right;
++        if (from_right == left_sibling) {
++            return false;
++        }
++        if (from_right == end) {
++            return true;
++        }
++        ++from_left;
++        if (from_left == right_sibling) {
++            return true;
++        }
++        if (from_left == end) {
+             return false;
+         }
+     }
+-    return true;
+ }
+ 
+ bool NeedsLift(Node goto_stmt, Node label_stmt) noexcept {
+diff --git a/src/video_core/renderer_vulkan/vk_compute_pipeline.cpp b/src/video_core/renderer_vulkan/vk_compute_pipeline.cpp
+index f9994a640..f3d6a7c15 100644
+--- a/src/video_core/renderer_vulkan/vk_compute_pipeline.cpp
++++ b/src/video_core/renderer_vulkan/vk_compute_pipeline.cpp
+@@ -160,13 +160,24 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
+             shader_notify->MarkShaderComplete();
+         }
+     }};
++    build_task = std::move(func);
+     if (thread_worker) {
+-        thread_worker->QueueWork(std::move(func));
++        thread_worker->QueueWork([this] { RunBuild(); });
+     } else {
+-        func();
++        RunBuild();
+     }
+ }
+ 
++void ComputePipeline::RunBuild() {
++    // After zortos293/Lichii f8f29b5769: a draw or dispatch that waits on a pipeline still queued
++    // behind hundreds of builds (Kirby Air Riders races) builds it itself on the scheduler thread.
++    if (build_claimed.exchange(true)) {
++        return;
++    }
++    build_task();
++    build_task = nullptr;
++}
++
+ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
+                                 Tegra::MemoryManager& gpu_memory, Scheduler& scheduler,
+                                 BufferCache& buffer_cache, TextureCache& texture_cache) {
+@@ -292,8 +303,9 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
+                          views_it);
+ 
+     if (!is_built.load(std::memory_order::relaxed)) {
+-        // Wait for the pipeline to be built
++        // Wait for the pipeline to be built, building it here if no worker has started it
+         scheduler.Record([this](vk::CommandBuffer) {
++            RunBuild();
+             std::unique_lock lock{build_mutex};
+             build_condvar.wait(lock, [this] { return is_built.load(std::memory_order::relaxed); });
+         });
+diff --git a/src/video_core/renderer_vulkan/vk_compute_pipeline.h b/src/video_core/renderer_vulkan/vk_compute_pipeline.h
+index fba0519b5..99bda0b1f 100644
+--- a/src/video_core/renderer_vulkan/vk_compute_pipeline.h
++++ b/src/video_core/renderer_vulkan/vk_compute_pipeline.h
+@@ -8,6 +8,7 @@
+ 
+ #include <atomic>
+ #include <condition_variable>
++#include <functional>
+ #include <mutex>
+ 
+ #include "common/common_types.h"
+@@ -78,8 +79,13 @@ private:
+     vk::Pipeline pipeline;
+ 
+     std::condition_variable build_condvar;
++    /// Builds the pipeline once, on whichever thread gets to it first.
++    void RunBuild();
++
+     std::mutex build_mutex;
+     std::atomic_bool is_built{false};
++    std::function<void()> build_task;
++    std::atomic_bool build_claimed{false};
+ };
+ 
+ } // namespace Vulkan
+diff --git a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+index 3ac26316f..0ca6f5af3 100644
+--- a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
++++ b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+@@ -360,13 +360,24 @@ GraphicsPipeline::GraphicsPipeline(
+     }};
+     // Before the build, which may run on a worker: the modules are shared with the reuse cache and stay alive.
+     configure_func = ConfigureFunc(*spv_modules, stage_infos);
++    build_task = std::move(func);
+     if (worker_thread) {
+-        worker_thread->QueueWork(std::move(func));
++        worker_thread->QueueWork([this] { RunBuild(); });
+     } else {
+-        func();
++        RunBuild();
+     }
+ }
+ 
++void GraphicsPipeline::RunBuild() {
++    // After zortos293/Lichii f8f29b5769: a draw or dispatch that waits on a pipeline still queued
++    // behind hundreds of builds (Kirby Air Riders races) builds it itself on the scheduler thread.
++    if (build_claimed.exchange(true)) {
++        return;
++    }
++    build_task();
++    build_task = nullptr;
++}
++
+ void GraphicsPipeline::AddTransition(GraphicsPipeline* transition) {
+     transition_keys.push_back(transition->key);
+     transitions.push_back(transition);
+@@ -683,8 +694,9 @@ bool GraphicsPipeline::ConfigureDraw(const RescalingPushConstant& rescaling,
+ 
+     scheduler.RequestRenderpass(texture_cache.GetFramebuffer());
+     if (!is_built.load(std::memory_order::relaxed)) {
+-        // Wait for the pipeline to be built
++        // Wait for the pipeline to be built, building it here if no worker has started it
+         scheduler.Record([this](vk::CommandBuffer) {
++            RunBuild();
+             std::unique_lock lock{build_mutex};
+             build_condvar.wait(lock, [this] { return is_built.load(std::memory_order::relaxed); });
+         });
+diff --git a/src/video_core/renderer_vulkan/vk_graphics_pipeline.h b/src/video_core/renderer_vulkan/vk_graphics_pipeline.h
+index 0ac3edcd8..3493102e9 100644
+--- a/src/video_core/renderer_vulkan/vk_graphics_pipeline.h
++++ b/src/video_core/renderer_vulkan/vk_graphics_pipeline.h
+@@ -10,6 +10,7 @@
+ #include <array>
+ #include <atomic>
+ #include <condition_variable>
++#include <functional>
+ #include <memory>
+ #include <mutex>
+ #include <type_traits>
+@@ -211,8 +212,13 @@ private:
+     u64 last_descriptor_buffer_generation{};
+ 
+     std::condition_variable build_condvar;
++    /// Builds the pipeline once, on whichever thread gets to it first.
++    void RunBuild();
++
+     std::mutex build_mutex;
+     std::atomic_bool is_built{false};
++    std::function<void()> build_task;
++    std::atomic_bool build_claimed{false};
+     bool uses_push_descriptor{false};
+     bool uses_descriptor_buffer{false};
+ };
+-- 
+2.51.0.windows.1
+
