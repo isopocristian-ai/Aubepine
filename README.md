@@ -32,9 +32,9 @@ on games that did not run elsewhere.</h4>
 
 - **Made on an AMD Radeon.** Aubépine is developed and tested on a Radeon RX 9070 XT (AMD driver,
   Windows), and several of its fixes target AMD: sparse memory backed for the AMD driver (Mario Kart
-  World's black road and green tour movie), occlusion queries copied without waiting, parallel pipeline
-  builds and pipelines the game waits on built first, Kirby and Yoshi shaders that AMD rejected. It
-  has not been tested on NVIDIA or Intel GPUs.
+  World's black road and green tour movie), occlusion queries copied without waiting, and pipeline
+  builds spread over workers (the AMD driver compiles one at a time), the ones the game waits on built
+  first. It has not been tested on NVIDIA or Intel GPUs.
 - **Star Fox** boots and plays (SDK 21.4.4): the new hardware audio codec (`nn::codec::hwacod`, opened
   through `hwopus` 100) with real Opus decoding, the Switch 2 sound mixer streams played through the
   audio output, and about fifteen more Ampere shader forms. It still needs a small game patch for its
