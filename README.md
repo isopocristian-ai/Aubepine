@@ -65,7 +65,8 @@ Only play games you own and dumped yourself. No keys, firmware or game files are
 ## Building
 
 Follow the [General Build Guide](docs/Build.md); the default branch of this repository is `pattex`.
-There are no prebuilt releases yet.
+A prebuilt Windows x64 build is in [Releases](https://github.com/pattex67/Aubepine/releases)
+(no keys, firmware or games included).
 
 ## Patches
 
@@ -96,6 +97,7 @@ encore un petit patch de jeu, voir [pattex/README.md](pattex/README.md)), **Yosh
 mystérieux** se lance en mode TV et joue son intro sans planter après la vidéo de Bébé Bowser, mais
 **l'écran est noir à la première mission** (une quinzaine de shaders utilisent des instructions pas
 encore traduites, travail en cours), et Kirby, Mario Kart World, DK Bananza et Metroid
-Prime 4 profitent des correctifs regroupés. Testé sur Windows 11 avec une Radeon RX 9070 XT. Pour
-compiler, suivre [docs/Build.md](docs/Build.md) sur la branche `pattex`. Ne jouez qu'à des jeux que vous
+Prime 4 profitent des correctifs regroupés. Testé sur Windows 11 avec une Radeon RX 9070 XT. Une version
+compilée pour Windows est dans les [Releases](https://github.com/pattex67/Aubepine/releases) ; pour
+compiler soi-même, suivre [docs/Build.md](docs/Build.md) sur la branche `pattex`. Ne jouez qu'à des jeux que vous
 possédez et avez extraits vous-même : aucun fichier de jeu, clé ou firmware n'est fourni.
