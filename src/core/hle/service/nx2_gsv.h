@@ -587,6 +587,16 @@ private:
                       address, size, w[3]);
             if (size != 0) {
                 Nvidia::Devices::Nx2GpuMemoryRegistry::Get().Unmap(address, size);
+                // The caches may still hold GPU writes to this memory and copy them back on a
+                // later CPU read, over the heap data the game puts there: Yoshi's Unreal allocator
+                // found a block header overwritten and aborted (2162-0001). Drop them once the GPU
+                // thread has run the work queued so far, before the slot event lets the game go on.
+                if (const auto device =
+                        Nvidia::Devices::Nx2GpuMemoryRegistry::Get().DeviceAddressOf(address)) {
+                    system.GPU().RunInOrder([&gpu = system.GPU(), device = *device, size] {
+                        gpu.InvalidateRegion(device, size);
+                    });
+                }
             }
             if (size == 0x2000) {
                 Tegra::Nx2RemoveSemaphoreRegion(address);
