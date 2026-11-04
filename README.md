@@ -34,9 +34,10 @@ on games that did not run elsewhere.</h4>
   through `hwopus` 100) with real Opus decoding, the Switch 2 sound mixer streams played through the
   audio output, and about fifteen more Ampere shader forms. It still needs a small game patch for its
   window check, see [pattex/README.md](pattex/README.md#star-fox-window-patch).
-- **Yoshi and the Mysterious Book** plays in docked mode at 60 FPS with no rejected shaders (surface
-  operations on texel buffers, `SUATOM`, array gathers, a few integer forms, its GPU-only memory backed
-  whole, and streamed-in shaders retried until their code has arrived).
+- **Yoshi and the Mysterious Book** starts in docked mode and plays its intro (surface operations on
+  texel buffers, `SUATOM`, array gathers, a few integer forms, its GPU-only memory backed whole, and
+  streamed-in shaders, compute ones included, retried until their code has arrived). The game itself
+  does not run yet: the screen goes black at the first mission (shaders still to translate).
 - **Kirby Air Riders**: menus, races and results render (Selevet's white-frame fixes and new shader
   forms); fewer rejected shaders than upstream.
 - **Mario Kart World**: Nemyu's fixes for the 2162-0001 title-screen abort and its stability guards,
@@ -51,7 +52,7 @@ Tested on Windows 11, Ryzen 7 9800X3D and Radeon RX 9070 XT, in short sessions.
 | Game | State |
 |---|---|
 | Star Fox | Title, intro cutscenes, training mission, sound; no rejected shaders (needs the window patch). |
-| Yoshi and the Mysterious Book | Docked: full intro, then gameplay at 60 FPS with no rejected shaders and no skipped draws (GPU-only memory backed whole for this game; shaders it streams in are retried until their code has arrived). Tested through the intro and the first minutes of play. |
+| Yoshi and the Mysterious Book | Docked: the game starts, title, intro and Bowser Jr. movie play, and it no longer aborts after the movie (patch 0010). **The first mission's screen is black**: about fifteen of its shaders use instructions not translated yet (LEA with a constant carry, a global load form, uniform-register shifts, a funnel shift, opcode `f66`); work in progress. |
 | Mario Kart World | Title, tour movie, races at ~40-45 FPS; no rejected shaders. |
 | Donkey Kong Bananza | Saves load and play; no rejected shaders. |
 | Kirby Air Riders | Menus, races and results; race scenery still partly dark; 8 rejected shaders. |
@@ -90,7 +91,9 @@ Aubépine is licensed under the GPLv3 (or any later version), like Eglantine. Re
 Il regroupe des correctifs de plusieurs forks et ajoute son propre travail : **Star Fox** démarre et se
 joue (codec audio matériel du SDK 21, son du nouveau mixeur, nouvelles instructions de shader ; il faut
 encore un petit patch de jeu, voir [pattex/README.md](pattex/README.md)), **Yoshi et le Livre
-mystérieux** se joue en mode TV à 60 FPS sans shader refusé, et Kirby, Mario Kart World, DK Bananza et Metroid
+mystérieux** se lance en mode TV et joue son intro sans planter après la vidéo de Bébé Bowser, mais
+**l'écran est noir à la première mission** (une quinzaine de shaders utilisent des instructions pas
+encore traduites, travail en cours), et Kirby, Mario Kart World, DK Bananza et Metroid
 Prime 4 profitent des correctifs regroupés. Testé sur Windows 11 avec une Radeon RX 9070 XT. Pour
 compiler, suivre [docs/Build.md](docs/Build.md) sur la branche `pattex`. Ne jouez qu'à des jeux que vous
 possédez et avez extraits vous-même : aucun fichier de jeu, clé ou firmware n'est fourni.
