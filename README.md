@@ -41,9 +41,10 @@ on games that did not run elsewhere.</h4>
   window check, see [pattex/README.md](pattex/README.md#star-fox-window-patch).
 - **Yoshi and the Mysterious Book** starts in docked mode and plays its intro (surface operations on
   texel buffers, `SUATOM`, array gathers, a few integer forms, its GPU-only memory backed whole, and
-  streamed-in shaders, compute ones included, retried until their code has arrived). The first
-  mission was still black on the last build tested in play; the shaders it rejected are translated
-  since, not tested there yet.
+  streamed-in shaders, compute ones included, retried until their code has arrived). **It usually
+  crashes or hangs on a white page a few seconds after the Bowser Jr. movie** (its heap gets
+  overwritten, cause still being looked for); the first mission was black on the last run that got
+  there.
 - **Kirby Air Riders**: menus, races and results render, and races now show their scenery (Selevet's
   white-frame fixes, Lichii's title-crash and shader-stall fixes, many new shader forms); no rejected
   shaders in a short run. The first race stutters while its shaders build.
@@ -63,7 +64,7 @@ Tested on Windows 11, Ryzen 7 9800X3D and Radeon RX 9070 XT, in short sessions.
 | Game | State |
 |---|---|
 | Star Fox | Title, intro cutscenes, training mission, sound; no rejected shaders (needs the window patch). |
-| Yoshi and the Mysterious Book | Docked: the game starts, title, intro and Bowser Jr. movie play; it can still abort (2162-0001) after the intro, about one run in three. **The first mission was still black on the last build tested in play**; its rejected shaders are translated since (patches 0017-0018), not tested in the mission yet. |
+| Yoshi and the Mysterious Book | Docked: the game starts, title, intro and Bowser Jr. movie play. **A few seconds after the Bowser Jr. movie it usually aborts (2162-0001) or hangs on a white page**: about 4 runs in 5 in our tests, builds before the latest Eglantine merge included. Unreal's heap gets overwritten right after the game frees the movie's video memory; the cause is still being looked for. When it gets past that point, the first mission was still black on the last run; its rejected shaders are translated since (patches 0017-0018). |
 | Mario Kart World | Title, tour movie, races at ~40-45 FPS; no rejected shaders. One short run in two aborted during the tour movie since the latest Eglantine merge. |
 | Donkey Kong Bananza | Saves load and play; no rejected shaders; ~28 FPS since Eglantine's frame wait (`EDEN_NX2_FRAMES_AHEAD=1` for the old behaviour). |
 | Kirby Air Riders | Menus, races and results; races show their scenery, the first one stutters while shaders build; no rejected shaders in a short run. |
@@ -106,9 +107,10 @@ d'occlusion, compilation des shaders) ; il n'a pas été testé sur NVIDIA ni In
 correctifs de plusieurs forks et ajoute son propre travail : **Star Fox** démarre et se
 joue (codec audio matériel du SDK 21, son du nouveau mixeur, nouvelles instructions de shader ; il faut
 encore un petit patch de jeu, voir [pattex/README.md](pattex/README.md)), **Yoshi et le Livre
-mystérieux** se lance en mode TV et joue son intro (il peut encore planter après, environ une fois sur
-trois) ; **l'écran était encore noir à la première mission** au dernier essai, ses shaders refusés sont
-traduits depuis mais pas encore testés en mission. Les courses de **Kirby** affichent maintenant leurs
+mystérieux** se lance en mode TV et joue son intro, mais **il plante ou reste sur une page blanche
+quelques secondes après la vidéo de Bébé Bowser** dans environ 4 essais sur 5 (sa mémoire est écrasée
+juste après que le jeu libère la mémoire de la vidéo ; cause encore recherchée), et la première mission
+était noire au dernier essai qui y est arrivé. Les courses de **Kirby** affichent maintenant leurs
 décors (la première rame pendant la compilation des shaders), et Mario Kart World, DK Bananza et
 Metroid Prime 4 profitent des correctifs regroupés. À jour avec Eglantine nx2 d9558f05a (4 novembre). Testé sur Windows 11 avec une Radeon RX 9070 XT. Une version
 compilée pour Windows est dans les [Releases](https://github.com/pattex67/Aubepine/releases) ; pour

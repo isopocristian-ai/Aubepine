@@ -63,7 +63,7 @@ the display then reads the right image with the right layout.
 | Kirby Air Riders | Menus, races and results render; the race now shows its scenery but the first race stutters while hundreds of shaders build (the next ones use the disk cache); no rejected shaders in a short run. |
 | Metroid Prime 4 | 60 FPS from loose dumps (RomFS fallback). |
 | Star Fox | Title, intro cutscenes, training mission, sound; no rejected shaders (needs the window patch). |
-| Yoshi and the Mysterious Book | Docked: the game starts, title, intro and Bowser Jr. movie play. It can still abort (2162-0001) after the intro, about one run in three. **The first mission was still black on the last build tested in play**; patches 0017 and 0018 translate the shaders it rejected there, not tested in the mission yet. |
+| Yoshi and the Mysterious Book | Docked: the game starts, title, intro and Bowser Jr. movie play. **A few seconds after the Bowser Jr. movie it usually aborts (2162-0001) or hangs on a white page**: about 4 runs in 5 in our tests, builds before the latest Eglantine merge included. Unreal's heap gets overwritten right after the game frees the movie's video memory; the cause is still being looked for. When it gets past that point, the first mission was still black on the last run; its rejected shaders are translated since (patches 0017-0018). |
 
 ## Credits
 
@@ -79,8 +79,8 @@ as Eglantine.
 Aubépine réunit PokeDinner, Eglantine nx2 (build 174 + #374), des correctifs repris d'autres
 forks (Nemyu, Selevet, MythosOfs) et notre travail pour faire tourner **Star Fox** (codec audio matériel
 `hwacod`, sortie son sysmix, une quinzaine d'instructions de shader) et **Yoshi et le Livre mystérieux**
-(se lance en mode TV et joue son intro ; l'écran était encore noir à la première mission au dernier
-essai, les shaders refusés là sont traduits depuis mais pas encore testés en mission). Depuis le
+(se lance en mode TV et joue son intro, mais plante ou reste sur une page blanche quelques secondes
+après la vidéo de Bébé Bowser dans environ 4 essais sur 5 ; cause encore recherchée). Depuis le
 4 novembre, la branche inclut aussi Eglantine nx2 d9558f05a, et les courses de Kirby affichent leurs
 décors (la première course rame pendant la compilation des shaders). Les patchs sont dans `patches/`, le patch de fenêtre de Star Fox dans
 `star-fox/` (à copier dans le dossier `load` d'Eglantine). Travail fait avec un assistant IA
