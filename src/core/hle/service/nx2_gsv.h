@@ -2091,10 +2091,8 @@ private:
         if (shown != m_shown_layout) {
             m_shown_layout = shown;
             LOG_INFO(Service,
-                     "nx2:vi2 composite image {} layout {}x{} pitch {:#x} block height 2^{}, at "
-                     "{:#x} (device {:#x}), drawn area {:#x}, crop {}x{}",
-                     image_id, layout.width, layout.height, layout.pitch, layout.block_height_log2,
-                     address, *device, shown_size, crop_width, crop_height);
+                     "nx2:vi2 composite image {} layout {}x{}, drawn area {:#x}, crop {}x{}",
+                     image_id, layout.width, layout.height, shown_size, crop_width, crop_height);
         }
         std::vector<Tegra::FramebufferConfig> layers{Tegra::FramebufferConfig{
             .address = *device,
@@ -3674,9 +3672,8 @@ private:
         image.memory = w[19];
         std::copy_n(w + 2, image.preference.size(), image.preference.begin());
         image.size = Nx2CalculateImageLayout(w + 2).size;
-        LOG_INFO(Service, "nx2:gsv 429 CreateNativeImage memory={} count={} size={:#x} -> id {} "
-                 "(preference {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x})",
-                 w[19], w[18], image.size, id, w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9]);
+        LOG_INFO(Service, "nx2:gsv 429 CreateNativeImage memory={} count={} size={:#x} -> id {}",
+                 w[19], w[18], image.size, id);
         TipcReplyWords(ctx, {id});
     }
 

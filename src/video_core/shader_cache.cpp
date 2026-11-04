@@ -117,9 +117,7 @@ bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) try {
             return false;
         }
         const ShaderInfo* shader_info{TryGet(*cpu_shader_addr)};
-        if (!shader_info && native && CaptureRetries().contains(*cpu_shader_addr) &&
-            std::chrono::steady_clock::now() - CaptureRetries()[*cpu_shader_addr].last <
-                std::chrono::milliseconds{100}) {
+        if (!shader_info && native && TriedRecently(*cpu_shader_addr)) {
             // Still uploading, tried less than 100 ms ago: skip the draw without capturing again.
             maxwell3d->GetNativeMacroEngine().native_execution_failed = true;
             last_shaders_valid = false;
@@ -224,10 +222,8 @@ const ShaderInfo* ShaderCache::ComputeShader() {
     if (const ShaderInfo* const shader = TryGet(*cpu_shader_addr)) {
         return shader;
     }
-    if (const auto retry = CaptureRetries().find(*cpu_shader_addr);
-        retry != CaptureRetries().end() &&
-        std::chrono::steady_clock::now() - retry->second.last < std::chrono::milliseconds{100}) {
-        return nullptr; // tried less than 100 ms ago, as for graphics programs
+    if (TriedRecently(*cpu_shader_addr)) {
+        return nullptr; // still uploading, as for graphics programs
     }
     try {
         RethrowIfRejected(*cpu_shader_addr);
@@ -266,17 +262,20 @@ std::unordered_map<VAddr, ShaderCache::CaptureRetry>& ShaderCache::CaptureRetrie
     return retries;
 }
 
-bool ShaderCache::MayStillBeWritten(const Shader::Exception& error) {
-    const std::string_view what{error.what()};
-    return what.find("outside capture bounds") != std::string_view::npos ||
-           what.find("unsupported native opcode") != std::string_view::npos;
+// True when a capture of the program failed as incomplete less than 100 ms ago.
+bool ShaderCache::TriedRecently(VAddr addr) {
+    const auto retry = CaptureRetries().find(addr);
+    return retry != CaptureRetries().end() &&
+           std::chrono::steady_clock::now() - retry->second.last < std::chrono::milliseconds{100};
 }
 
 // A program the game is still uploading reads as zeros, as older data at that address (an opcode
 // we do not know at its start) or runs into other data. Returns true while such a failure should be
 // tried again (for a minute after the first one), false once it should be rejected for good.
 bool ShaderCache::RetryLater(VAddr addr, const Shader::Exception& error) {
-    const bool incomplete = MayStillBeWritten(error);
+    const std::string_view what{error.what()};
+    const bool incomplete = what.find("outside capture bounds") != std::string_view::npos ||
+                            what.find("unsupported native opcode") != std::string_view::npos;
     const auto now = std::chrono::steady_clock::now();
     auto& retry = CaptureRetries()[addr];
     if (retry.first == std::chrono::steady_clock::time_point{}) {

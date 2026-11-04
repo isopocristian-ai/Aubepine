@@ -210,11 +210,6 @@ private:
 
     void Initialize(HLERequestContext& ctx) {
         const auto cmd = ctx.CommandBuffer();
-        std::string words;
-        for (u32 i = 0; i < 48; ++i) {
-            words += fmt::format(" {:08x}", cmd[i]);
-        }
-        LOG_WARNING(Service_Audio, "(STUBBED) hwacod Initialize:{}", words);
         if (m_event == nullptr) {
             m_event = m_context.CreateEvent("hwopus:hwacod:Event");
         }
@@ -234,7 +229,7 @@ private:
             .output_capacity = raw[16],
             .event = m_event,
         };
-        LOG_WARNING(Service_Audio, "hwacod I/O region {:#x} size {:#x}, result ring at +{:#x} ({} entries)",
+        LOG_INFO(Service_Audio, "hwacod I/O region {:#x} size {:#x}, result ring at +{:#x} ({} entries)",
                     shared.io_address, shared.io_size, shared.ring_offset, shared.ring_count);
         IPC::ResponseBuilder rb{ctx, 3, 1, 1};
         rb.Push(ResultSuccess);
@@ -396,7 +391,7 @@ Result IHardwareOpusDecoderManager::GetWorkBufferSizeForMultiStreamExEx(
 }
 
 void IHardwareOpusDecoderManager::OpenHardwareAudioCodecSession(HLERequestContext& ctx) {
-    LOG_WARNING(Service_Audio, "(STUBBED) hwopus 100, returning a hwacod session");
+    LOG_DEBUG(Service_Audio, "hwopus 100 opens a hwacod session");
     IPC::ResponseBuilder rb{ctx, 2, 0, 1};
     rb.Push(ResultSuccess);
     rb.PushIpcInterface<IHardwareAudioCodecSession>(ctx, system);

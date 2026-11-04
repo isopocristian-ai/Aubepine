@@ -6,15 +6,14 @@
 
 #pragma once
 
-#include <chrono>
-#include <unordered_map>
-
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <exception>
 #include <memory>
 #include <mutex>
 #include <span>
+#include <unordered_map>
 #include "common/container/unordered_map.h"
 #include "shader_recompiler/exception.h"
 #include <utility>
@@ -164,9 +163,12 @@ private:
     /// Whether a native program at this address was rejected.
     bool IsRejected(VAddr addr);
     /// Remembers the exception being handled as this address's rejection.
-    bool RetryLater(VAddr addr, const Shader::Exception& error);
-    static bool MayStillBeWritten(const Shader::Exception& error);
     void RememberRejection(VAddr addr);
+    /// Whether a failed capture may be a program still being uploaded, to try again later.
+    bool RetryLater(VAddr addr, const Shader::Exception& error);
+    /// Whether such a capture failed less than 100 ms ago.
+    bool TriedRecently(VAddr addr);
+    /// Failed captures of programs that may still be uploading, per program address.
     struct CaptureRetry {
         std::chrono::steady_clock::time_point first{};
         std::chrono::steady_clock::time_point last{};
