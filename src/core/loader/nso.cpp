@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "common/common_funcs.h"
+#include "common/game_presets.h"
 #include "common/hex_util.h"
 #include "common/logging.h"
 #include "common/lz4_compression.h"
@@ -188,6 +189,7 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
     // and the game ran in slow motion. The same loop also stores the whole frame's time
     // ([fw+0xe8], calc + draw + present), so the interval code is pointed at that one.
     const bool mkw_dynamic = Settings::values.mkw_dynamic_fps.GetValue();
+    bool mkw_dynamic_fps_patch_applied = false;
     if ((mkw_dynamic || Settings::values.mkw_30fps.GetValue()) && name == "main" &&
         process.GetProgramId() == 0x0400C3F00006E000ULL) {
         constexpr u32 ModeLoadInsn = 0xB9421268; // ldr w8, [x19, #0x210]
@@ -234,6 +236,7 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
             if (mkw_dynamic) {
                 const u32 whole_frame = 0xF9407660 | (word(frame_time) & 0x1F);
                 std::memcpy(code + frame_time * sizeof(u32), &whole_frame, sizeof(whole_frame));
+                mkw_dynamic_fps_patch_applied = true;
             }
             LOG_INFO(Loader, "Mario Kart World: {} on (main+{:#x})",
                      mkw_dynamic ? "dynamic FPS" : "30 FPS mode",
@@ -372,6 +375,9 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
     // Load codeset for current process
     LOG_INFO(Loader, "Module {} loaded at {:#x} (size {:#x})", nso_file.GetName(), load_base, image_size);
     process.LoadModule(system.Kernel(), std::move(codeset), load_base);
+    if (name == "main" && process.GetProgramId() == Settings::MarioKartWorldProgramId) {
+        process.SetMkwDynamicFpsPatchApplied(mkw_dynamic_fps_patch_applied);
+    }
     return load_base + image_size;
 }
 

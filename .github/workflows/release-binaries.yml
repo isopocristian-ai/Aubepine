@@ -14,6 +14,9 @@ on:
     # A binary only changes when build inputs change; docs-only pushes skip the build.
     paths:
       - "src/**"
+      # Test-only changes cannot change a binary: the build configures with BUILD_TESTING=OFF and
+      # YUZU_TESTS=OFF below, so a push that only touches src/tests has nothing to rebuild.
+      - "!src/tests/**"
       - "CMakeLists.txt"
       - "CMakeModules/**"
       - "externals/**"
@@ -26,9 +29,9 @@ on:
 permissions:
   contents: read
 
-# Clang major the Linux PGO build uses, from apt.llvm.org. Eden's profile is written by a current
-# clang and an older reader refuses it, so this has to stay at or above whatever produced
-# eden.profdata; bump it when a refreshed profile needs a newer LLVM.
+# Clang major the Linux PGO build uses, from apt.llvm.org. A profile is written by a current clang
+# and an older reader refuses it, so this has to stay at or above whatever produced
+# eglantine.profdata; bump it when a refreshed profile needs a newer LLVM.
 env:
   PGO_LLVM_VERSION: "23"
 
@@ -53,9 +56,11 @@ jobs:
         include:
           - platform: linux-x86_64
             runner: ubuntu-24.04
-          # The two -pgo builds are the same programs compiled by clang against Eden's periodically
-          # updated profile (https://github.com/Eden-CI/PGO). Windows uses MSYS2's MinGW clang like
-          # Eden does; MSVC cannot read an LLVM .profdata file.
+          # The two -pgo builds are the same programs compiled by clang against the repo's
+          # eglantine.profdata. Eden's profile (Eden-CI/PGO) comes from Switch 1 games: with it Mario
+          # Kart World ran at about half the speed of the normal build, with eglantine.profdata at
+          # about the same speed. Windows uses MSYS2's MinGW clang like Eden does; MSVC cannot read
+          # an LLVM .profdata file.
           - platform: linux-x86_64-pgo
             runner: ubuntu-24.04
             pgo: true
@@ -145,16 +150,13 @@ jobs:
             "clang-$PGO_LLVM_VERSION" "lld-$PGO_LLVM_VERSION"
           "clang-$PGO_LLVM_VERSION" --version
 
-      # Fetched into the source tree so both the Linux and MSYS2 configure steps can read it from a
-      # path their clang understands.
-      - name: Download PGO profile
+      # The profile is in the source tree, where both the Linux and MSYS2 configure steps read it.
+      - name: Check PGO profile
         if: matrix.pgo
         shell: bash
         run: |
           set -euo pipefail
-          curl -fsSL -o eden.profdata \
-            https://github.com/Eden-CI/PGO/releases/latest/download/eden.profdata
-          test -s eden.profdata
+          test -s eglantine.profdata
 
       - name: Set up MSVC
         if: matrix.platform == 'windows-x86_64'
@@ -255,7 +257,7 @@ jobs:
           )
           if [ '${{ matrix.pgo }}' = 'true' ]; then
             # Same flags Eden's CI passes for its clang PGO build.
-            profile="-fprofile-use=$PWD/eden.profdata -Wno-backend-plugin \
+            profile="-fprofile-use=$PWD/eglantine.profdata -Wno-backend-plugin \
               -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date"
             flags+=(
               "-DCMAKE_C_COMPILER=clang-$PGO_LLVM_VERSION"
@@ -306,14 +308,14 @@ jobs:
             -DUSE_DISCORD_PRESENCE=OFF \
             -DUSE_CCACHE=ON
 
-      # MinGW build: system Qt and libraries from MSYS2, clang plus Eden's PGO profile. The profile
+      # MinGW build: system Qt and libraries from MSYS2, clang plus the repo's PGO profile. The profile
       # path is converted to its Windows form because clang runs with the MSYS mount underneath.
       - name: Configure MinGW PGO
         if: matrix.mingw
         shell: msys2 {0}
         run: |
           set -euo pipefail
-          profile="-fprofile-use=$(cygpath -m "$PWD/eden.profdata") -Wno-backend-plugin \
+          profile="-fprofile-use=$(cygpath -m "$PWD/eglantine.profdata") -Wno-backend-plugin \
             -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date"
           cmake -S . -B build/release -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
@@ -388,6 +390,11 @@ jobs:
           cp dist/Eglantine.png "$icon"
           export APPIMAGE_EXTRACT_AND_RUN=1
           export QMAKE="$QT_ROOT_DIR/bin/qmake"
+          # Include Wayland platform plugins and their graphics/shell integrations.
+          export EXTRA_QT_MODULES=waylandcompositor
+          export EXTRA_PLATFORM_PLUGINS='libqwayland-egl.so;libqwayland-generic.so'
+          # Embedded in the AppImage metadata; matches the release tag (build-N) plus the commit.
+          export LDAI_VERSION="build-${GITHUB_RUN_NUMBER}-${GITHUB_SHA::7}"
           export LDAI_OUTPUT="eglantine-${GITHUB_SHA}-${{ matrix.platform }}.AppImage"
           export OUTPUT="$LDAI_OUTPUT"
           export ARCH="$arch"
@@ -553,82 +560,12 @@ jobs:
           compression-level: 0
           retention-days: 7
 
-  android:
-    name: android-arm64 apk
-    runs-on: ubuntu-24.04
-    env:
-      CCACHE_DIR: ${{ github.workspace }}/.ccache
-      CCACHE_MAXSIZE: 1500M
-      # Gradle's .cxx build folders are named by a config hash; relative paths keep hits stable.
-      CCACHE_BASEDIR: ${{ github.workspace }}
-    steps:
-      - name: Check out source
-        uses: actions/checkout@v5
-
-      - name: Set up Java
-        uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: '17'
-          cache: gradle
-
-      # The runner image has the SDK; add the NDK, CMake and platform the Gradle build asks for,
-      # and glslangValidator for the host shaders.
-      - name: Install Android packages
-        shell: bash
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends glslang-tools ccache
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install \
-            "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358" "cmake;3.31.5" > /dev/null
-
-      - name: Cache CPM downloads
-        uses: actions/cache@v5
-        with:
-          path: .cache/cpm
-          key: cpm-android-${{ hashFiles('cpmfile.json', 'CMakeLists.txt', 'src/**/CMakeLists.txt') }}
-          restore-keys: |
-            cpm-android-
-
-      - name: Cache compiler objects
-        uses: actions/cache@v5
-        with:
-          path: .ccache
-          key: objects-android-arm64-${{ github.sha }}
-          restore-keys: |
-            objects-android-arm64-
-
-      # A second APK under AnTuTu's package name, which some GPU drivers run with higher clocks.
-      # Both share the native build, so the second assemble only repackages.
-      - name: Build APKs
-        shell: bash
-        working-directory: src/android
-        run: |
-          set -euo pipefail
-          for variant in "dev.eglantine.eglantine:" "com.antutu.ABenchMark:-antutu"; do
-            ./gradlew --no-daemon "-PappId=${variant%%:*}" "-PYUZU_ANDROID_ARGS=-DUSE_CCACHE=ON" \
-              assembleMainlineRelease
-            apk=$(find app/build/outputs/apk/mainline/release -name '*.apk' | head -1)
-            cp "$apk" "$GITHUB_WORKSPACE/eglantine-${GITHUB_SHA}-android-arm64${variant#*:}.apk"
-          done
-          ccache --show-stats
-
-      - name: Upload APKs
-        uses: actions/upload-artifact@v7
-        with:
-          name: eglantine-android-arm64-${{ github.sha }}
-          path: eglantine-${{ github.sha }}-android-arm64*.apk
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 7
-
   # Publishes every binary as a GitHub pre-release once every platform built: on pushes to nx2
   # and nx2-experimental, and on manual runs unless "Publish the binaries as a GitHub release" is
   # unticked.
   release:
     name: Publish release
-    needs: [build, android]
+    needs: build
     if: github.event_name == 'push' || inputs.publish_release
     runs-on: ubuntu-24.04
     permissions:
@@ -653,10 +590,6 @@ jobs:
             if compgen -G "$artifact*.AppImage" > /dev/null; then
               # Linux: ship the AppImage and the tar.gz as they are.
               for file in "$artifact"*.AppImage "$artifact"*.tar.gz; do
-                cp "$file" "dist/$(strip_sha "$(basename "$file")")"
-              done
-            elif compgen -G "$artifact*.apk" > /dev/null; then
-              for file in "$artifact"*.apk; do
                 cp "$file" "dist/$(strip_sha "$(basename "$file")")"
               done
             elif compgen -G "$artifact*.zip" > /dev/null; then
@@ -705,14 +638,7 @@ jobs:
           | --- | --- | --- | --- |
           | arm64 (Apple Silicon) | [zip](${base}/eglantine-macos-arm64.zip) | | macOS 15 or newer. Not notarized: right-click and choose Open the first time, or run \`xattr -dr com.apple.quarantine eglantine.app\`. \`eden-cli\` is inside the app, in \`Contents/MacOS\` |
 
-          The PGO builds are the same programs compiled with profile-guided optimization (clang plus Eden's profile); prefer them when your CPU supports it.
-
-          ## Android
-
-          | Build Type | APK | Notes |
-          | --- | --- | --- |
-          | arm64 | [APK](${base}/eglantine-android-arm64.apk) | Android 13 or newer |
-          | arm64 (AnTuTu package) | [APK](${base}/eglantine-android-arm64-antutu.apk) | Installed as \`com.antutu.ABenchMark\`, which some GPU drivers run with higher clocks. Cannot be installed alongside AnTuTu itself |
+          The PGO builds are the same programs compiled with profile-guided optimization (clang plus Eglantine's profile); prefer them when your CPU supports it.
           EOF
 
           gh release create "${tag}" dist/* \
