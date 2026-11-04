@@ -30,6 +30,11 @@ on games that did not run elsewhere.</h4>
 
 ## What it adds
 
+- **Made on an AMD Radeon.** Aubépine is developed and tested on a Radeon RX 9070 XT (AMD driver,
+  Windows), and several of its fixes target AMD: sparse memory backed for the AMD driver (Mario Kart
+  World's black road and green tour movie), occlusion queries copied without waiting, parallel pipeline
+  builds and pipelines the game waits on built first, Kirby and Yoshi shaders that AMD rejected. It
+  has not been tested on NVIDIA or Intel GPUs.
 - **Star Fox** boots and plays (SDK 21.4.4): the new hardware audio codec (`nn::codec::hwacod`, opened
   through `hwopus` 100) with real Opus decoding, the Switch 2 sound mixer streams played through the
   audio output, and about fifteen more Ampere shader forms. It still needs a small game patch for its
@@ -95,7 +100,10 @@ Aubépine is licensed under the GPLv3 (or any later version), like Eglantine. Re
 ## En français
 
 **Aubépine** est un émulateur expérimental de la Nintendo Switch 2, fork d'Eglantine et de PokeDinner.
-Il regroupe des correctifs de plusieurs forks et ajoute son propre travail : **Star Fox** démarre et se
+Il est développé et testé sur une **Radeon RX 9070 XT** (pilote AMD) et plusieurs de ses correctifs
+visent les cartes AMD (mémoire « sparse », route noire et vidéo verte de Mario Kart World, requêtes
+d'occlusion, compilation des shaders) ; il n'a pas été testé sur NVIDIA ni Intel. Il regroupe des
+correctifs de plusieurs forks et ajoute son propre travail : **Star Fox** démarre et se
 joue (codec audio matériel du SDK 21, son du nouveau mixeur, nouvelles instructions de shader ; il faut
 encore un petit patch de jeu, voir [pattex/README.md](pattex/README.md)), **Yoshi et le Livre
 mystérieux** se lance en mode TV et joue son intro (il peut encore planter après, environ une fois sur
