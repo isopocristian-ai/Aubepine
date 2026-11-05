@@ -304,9 +304,13 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
                          views_it);
 
     if (!is_built.load(std::memory_order::relaxed)) {
-        // Wait for the pipeline to be built, building it here if no worker has started it
+        // Wait for the pipeline to be built, building it here if no worker has started it.
+        // Not on drivers that compile one pipeline at a time (AMD on Windows, which can break
+        // with parallel compiles): a build here would run beside the worker's.
         scheduler.Record([this](vk::CommandBuffer) {
-            RunBuild();
+            if (!device.HasBrokenParallelShaderCompiling()) {
+                RunBuild();
+            }
             std::unique_lock lock{build_mutex};
             build_condvar.wait(lock, [this] { return is_built.load(std::memory_order::relaxed); });
         });
