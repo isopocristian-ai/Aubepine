@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <chrono>
 #include <cstdlib>
@@ -466,9 +467,31 @@ std::shared_ptr<const LoweredNativeCode> GenericEnvironment::LowerNativeCode(u32
         }
         if (status == Shader::Ampere::ProgramCaptureState::Result::Complete) break;
     }
+    // The full matrix-multiply emulation forced on AMD Windows grows with each HMMA. Programs with
+    // many (Ocarina of Time's networks: 14 MB of SPIR-V the AMD compiler never finished, the game
+    // froze 10 s in) are left to the tensor stand-in as on other drivers. EDEN_NX2_TENSOR_LIMIT=<n>
+    // sets the most HMMAs emulated by default (300: Kirby Air Riders needs 288, its stand-in path
+    // crashed; Ocarina of Time's three largest have 464 to 768).
+    const bool full_tensor = native_tensor_full_by_default && [&] {
+        static const size_t limit = [] {
+            const char* const value = std::getenv("EDEN_NX2_TENSOR_LIMIT");
+            return value ? static_cast<size_t>(std::strtoull(value, nullptr, 10)) : size_t{300};
+        }();
+        const size_t count = static_cast<size_t>(std::count_if(native.begin(), native.end(), [](const auto& insn) {
+            return insn.Bits(0, 12) == 0x23c && insn.Bits(12, 4) != 15;
+        }));
+        if (count != 0) {
+            static std::atomic<u32> reported{};
+            if (reported.fetch_add(1, std::memory_order_relaxed) < 64) {
+                LOG_INFO(HW_GPU, "Native program at {:#x}: {} HMMA, {}", program_base + native_header_size,
+                         count, count <= limit ? "emulated" : "left to the tensor stand-in");
+            }
+        }
+        return count <= limit;
+    }();
     auto lowered = Shader::Ampere::LowerToMaxwell(
         native, {.geometry = geometry,
-                 .tensor = native_tensor || native_tensor_full_by_default,
+                 .tensor = native_tensor || full_tensor,
                  .native_code_address = program_base + native_header_size});
     // EDEN_NX2_REJECT=<hex address>,...: treat these programs as rejected (to find which newly
     // lowered program changes a game's behaviour without rebuilding).
