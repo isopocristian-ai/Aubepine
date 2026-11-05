@@ -21,10 +21,12 @@ public:
             const s64 target = s64{index} * 16 + 16 + relative;
             if (target < 0 || target % 16 || target >= MaximumInstructions * 16)
                 return Result::InvalidTarget;
-            // CALL.REL.NOINC (bit 86) pushes no return address: the compiler uses it as a jump
-            // (the lowering treats it as one), so it never pairs with a RET.
-            const bool noinc_call = opcode == 0x944 && (instruction.words[2] & 0x400000) != 0;
-            if (opcode == 0x944 && !noinc_call) {
+            // CALL.REL.NOINC (bit 86) pushes no return address, but its callee still returns with
+            // RET.REL.NODEC through a link register set before the call. Counted as a call, so a
+            // program whose helpers sit after its EXIT ends at their last RET instead of running
+            // on into the next program (Ocarina of Time: shaders the AMD driver never finished
+            // compiling). After zortos293/Lichii c9ebb5c3af (#87).
+            if (opcode == 0x944) {
                 last_call_target = std::max(last_call_target, static_cast<u32>(target / 16));
             } else {
                 last_forward_target = std::max(last_forward_target, static_cast<u32>(target / 16));
@@ -38,7 +40,7 @@ public:
         if (opcode == 0x949 || opcode == 0x958) computed_branch = true;
         if (computed_branch) return Result::Continue;
         if (opcode == 0x94d && instruction.Bits(12, 4) == 7 && index >= last_forward_target) {
-            if (!last_call_target) return Result::Complete;
+            if (index >= last_call_target) return Result::Complete;
             main_exited = true;
         }
         if (opcode == 0x950 && instruction.Bits(12, 4) == 7 && main_exited &&
