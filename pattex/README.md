@@ -15,7 +15,7 @@ files. `git am` of 0001 to 0015 on PokeDinner 216b5034c reproduces the branch up
 Eglantine merge; the branch then merges Eglantine nx2 d9558f05a (158 commits: DK Bananza frame wait
 and tensor programs, Hyrule Warriors and Pokopia shader forms, buffer cache GPU-write fixes, split
 batching, FSR 3.1 in place of a game's DLSS, mesh-shader fallback; the conflicts are resolved in the
-merge commit, keeping our lowerings where they cover more), and 0016 to 0037 apply on top of it with
+merge commit, keeping our lowerings where they cover more), and 0016 to 0040 apply on top of it with
 the two later merges noted in the table:
 
 | Patch | Content |
@@ -59,6 +59,9 @@ the two later merges noted in the table:
 | 0035 | SPIR-V: 32-bit atomics on untracked global memory through the storage buffer lookup (after Lichii #87); task and mesh stages in the push constant range (after Eglantine #472); `EDEN_NX2_MESH_FIRST=1` experiment (after Lichii d7663205ba). |
 | 0036 | SPIR-V: per-tap gathers with computed offsets run one gather per tap instead of dropping the offsets (Ocarina's upscaler); test switches `EDEN_NX2_GLOBAL_ATOMICS` and `EDEN_NX2_FRAME_BURST`. |
 | 0037 | Global atomics off by default (`EDEN_NX2_GLOBAL_ATOMICS=1` turns them on): with them, Ocarina's forest light passes flash white for single frames. |
+| 0038 | **Vulkan**: the occlusion counter is paused at each submission instead of reset (from [zortos293/Lichii](https://github.com/zortos293/Lichii) #121 by Kajcsi). A submission between a guest's counter reset and its report dropped the samples, and Ocarina of Time read the object as hidden for one frame: the white flashes are gone (0 in 500 frames, 17 before). |
+| 0039 | Shader, AMD: the demote reorder counts nested returns, so programs that end discarded pixels under two conditions keep their demote (from Lichii #127 by Inc0rporate). |
+| 0040 | Pipeline cache version 24 (shaders are rebuilt once). |
 
 Patches 0004 to 0006 are this fork's own work and only touch a few files
 (`lower_to_maxwell.h`, `hardware_opus_decoder_manager.*`, `nx2_audio_device_manager.h`); they should
@@ -83,7 +86,7 @@ the display then reads the right image with the right layout.
 | Kirby Air Riders | Menus, races and results render; the race now shows its scenery but the first race stutters while hundreds of shaders build (the next ones use the disk cache); no rejected shaders in a short run. |
 | Metroid Prime 4 | 60 FPS from loose dumps (RomFS fallback). |
 | Star Fox | Title, intro cutscenes, training mission, sound; no rejected shaders (needs the window patch). |
-| The Legend of Zelda: Ocarina of Time | Docked, from a save: Kokiri Forest plays at ~40-55 FPS (60 indoors), shadows and lit rocks; 4-5 minute runs without a crash. **Outdoor light is still too bright and foggy** (much of the vegetation is culled on the GPU through pointer tables this branch can't follow yet; Lichii is fixing it) and rare single-frame light flashes remain. Three neural-network programs at boot are left to the tensor stand-in. |
+| The Legend of Zelda: Ocarina of Time | Docked, from a save: Kokiri Forest plays at ~40-55 FPS (60 indoors), shadows and lit rocks; 4-5 minute runs without a crash. **Outdoor light is still too bright and foggy** (much of the vegetation is culled on the GPU through pointer tables this branch can't follow yet; Lichii is fixing it) and the single-frame flashes are gone (Lichii #121). Three neural-network programs at boot are left to the tensor stand-in. |
 | Yoshi and the Mysterious Book | Docked: the game starts, title, intro and Bowser Jr. movie play. **A few seconds after the Bowser Jr. movie it usually aborts (2162-0001) or hangs on a white page**: about 4 runs in 5 in our tests, builds before the latest Eglantine merge included. Unreal's heap gets overwritten right after the game frees the movie's video memory; the cause is still being looked for. When it gets past that point, the first mission was still black on the last run; its rejected shaders are translated since (patches 0017-0018). |
 
 ## Credits

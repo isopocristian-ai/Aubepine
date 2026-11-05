@@ -1,0 +1,45 @@
+From 47c6ecdb5d5f8ad9767f37b2856860a6ad12a8db Mon Sep 17 00:00:00 2001
+From: pattex67 <33281022+pattex67@users.noreply.github.com>
+Date: Thu, 5 Nov 2026 18:57:06 +0100
+Subject: [PATCH 39/40] shader: count nested returns before moving demotes to
+ the end (AMD)
+
+A nested early return left before the demote moved to the end and wrote its colours.
+From zortos293/Lichii #127 (Inc0rporate).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../frontend/maxwell/structured_control_flow.cpp     | 12 +++++++-----
+ 1 file changed, 7 insertions(+), 5 deletions(-)
+
+diff --git a/src/shader_recompiler/frontend/maxwell/structured_control_flow.cpp b/src/shader_recompiler/frontend/maxwell/structured_control_flow.cpp
+index c985dbfce7..421dc3718a 100644
+--- a/src/shader_recompiler/frontend/maxwell/structured_control_flow.cpp
++++ b/src/shader_recompiler/frontend/maxwell/structured_control_flow.cpp
+@@ -920,16 +920,18 @@ private:
+             if (node.type != Type::Block) {
+                 continue;
+             }
+-            if (branch_depth > 1) {
+-                // Skip reordering nested demote branches.
+-                continue;
+-            }
+             for (const IR::Inst& inst : node.data.block->Instructions()) {
+                 const IR::Opcode op{inst.GetOpcode()};
+                 if (op == IR::Opcode::DemoteToHelperInvocation) {
+-                    demote_blocks.push_back(node.data.block);
++                    // Skip reordering nested demote branches.
++                    if (branch_depth <= 1) {
++                        demote_blocks.push_back(node.data.block);
++                    }
+                     break;
+                 }
++                // Returns count at any depth: a nested early return (an EXIT under two
++                // conditions, as native fragment programs end their discarded invocations) would
++                // otherwise leave before the demote moved to the end, and write its colours.
+                 if (op == IR::Opcode::Epilogue) {
+                     ++num_epilogues;
+                 }
+-- 
+2.51.0.windows.1
+

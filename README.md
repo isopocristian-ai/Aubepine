@@ -47,9 +47,9 @@ on games that did not run elsewhere.</h4>
   there.
 - **The Legend of Zelda: Ocarina of Time** boots and plays on AMD: new shader forms, matrix-multiply
   programs kept small enough for the AMD compiler, its GPU memory backed whole, the forest shadow map
-  given memory (shadows and lit rocks), faster CPU writes next to GPU data. **Outdoor light is still
-  too bright and foggy** (most of the forest's vegetation is culled on the GPU through pointer tables
-  not followed yet) and rare single-frame light flashes remain.
+  given memory (shadows and lit rocks), faster CPU writes next to GPU data, no more single-frame white flashes (occlusion counter fix
+  from Lichii #121). **Outdoor light is still too bright and foggy** (most of the forest's vegetation
+  is culled on the GPU through pointer tables not followed yet on AMD).
 - **Kirby Air Riders**: menus, races and results render, and races now show their scenery (Selevet's
   white-frame fixes, Lichii's title-crash and shader-stall fixes, many new shader forms); no rejected
   shaders in a short run. The first race stutters while its shaders build.
@@ -70,7 +70,7 @@ Tested on Windows 11, Ryzen 7 9800X3D and Radeon RX 9070 XT, in short sessions.
 | Game | State |
 |---|---|
 | Star Fox | Title, intro cutscenes, training mission, sound; no rejected shaders (needs the window patch). |
-| The Legend of Zelda: Ocarina of Time | Docked, from a save: Kokiri Forest plays at ~40-55 FPS (60 indoors) with shadows, 4-5 minute runs without a crash. **Outdoor light still too bright and foggy**, rare single-frame flashes. |
+| The Legend of Zelda: Ocarina of Time | Docked, from a save: Kokiri Forest plays at ~40-55 FPS (60 indoors) with shadows, 4-5 minute runs without a crash, no white flashes. **Outdoor light still too bright and foggy**. |
 | Yoshi and the Mysterious Book | Docked: the game starts, title, intro and Bowser Jr. movie play. **A few seconds after the Bowser Jr. movie it usually aborts (2162-0001) or hangs on a white page**: about 4 runs in 5 in our tests, builds before the latest Eglantine merge included. Unreal's heap gets overwritten right after the game frees the movie's video memory; the cause is still being looked for. When it gets past that point, the first mission was still black on the last run; its rejected shaders are translated since (patches 0017-0018). |
 | Mario Kart World | Title, tour movie, races at ~40-45 FPS; no rejected shaders. One short run in two aborted during the tour movie since the latest Eglantine merge. |
 | Donkey Kong Bananza | Saves load and play; no rejected shaders; ~28 FPS since Eglantine's frame wait (`EDEN_NX2_FRAMES_AHEAD=1` for the old behaviour). |
@@ -121,8 +121,8 @@ juste après que le jeu libère la mémoire de la vidéo ; cause encore recherch
 décors (la première rame pendant la compilation des shaders), et Mario Kart World, DK Bananza et
 Metroid Prime 4 profitent des correctifs regroupés. **Zelda: Ocarina of Time** démarre et se joue sur AMD
 (ombres et rochers éclairés dans la forêt Kokiri, 40-55 FPS) ; la lumière extérieure reste **trop forte
-et brumeuse** (une grande partie de la végétation n'est pas encore dessinée) et de rares flashs d'une
-image subsistent. À jour avec Eglantine nx2 e736dfde9e (5 novembre). Testé sur Windows 11 avec une Radeon RX 9070 XT. Une version
+et brumeuse** (une grande partie de la végétation n'est pas encore dessinée) ; les flashs blancs
+d'une image ont disparu. À jour avec Eglantine nx2 e736dfde9e (5 novembre). Testé sur Windows 11 avec une Radeon RX 9070 XT. Une version
 compilée pour Windows est dans les [Releases](https://github.com/pattex67/Aubepine/releases) ; pour
 compiler soi-même, suivre [docs/Build.md](docs/Build.md) sur la branche `pattex`. Ne jouez qu'à des jeux que vous
 possédez et avez extraits vous-même : aucun fichier de jeu, clé ou firmware n'est fourni.

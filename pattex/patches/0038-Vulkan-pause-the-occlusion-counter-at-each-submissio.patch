@@ -1,0 +1,56 @@
+From 1f7978ec20b6df1e19168c0b043f57ba26a8a648 Mon Sep 17 00:00:00 2001
+From: pattex67 <33281022+pattex67@users.noreply.github.com>
+Date: Thu, 5 Nov 2026 18:57:05 +0100
+Subject: [PATCH 38/40] Vulkan: pause the occlusion counter at each submission
+ instead of resetting it
+
+A submission between a guest's counter reset and its report dropped the samples counted so far,
+and Ocarina of Time read the low report as occluded for one frame (white flashes). Past one bank
+of slots the count is dropped as a reset would. From zortos293/Lichii #121 (Kajcsi).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/video_core/renderer_vulkan/vk_query_cache.cpp | 9 +++++++++
+ src/video_core/renderer_vulkan/vk_scheduler.cpp   | 4 +++-
+ 2 files changed, 12 insertions(+), 1 deletion(-)
+
+diff --git a/src/video_core/renderer_vulkan/vk_query_cache.cpp b/src/video_core/renderer_vulkan/vk_query_cache.cpp
+index 0b7025815f..962728c7a1 100644
+--- a/src/video_core/renderer_vulkan/vk_query_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_query_cache.cpp
+@@ -210,8 +210,17 @@ public:
+         last_accumulation_checkpoint = (std::max)(last_accumulation_checkpoint, num_slots_used);
+     }
+ 
++    // Called at each submission. The running query carries the count across it: a guest's
++    // reset-to-report window can span one.
+     void CloseCounter() override {
+         PauseCounter();
++        // A title that counts without resetting or reporting grows the query by a slot at every
++        // submission and render pass, and the query keeps every bank it touches alive. Ocarina of
++        // Time's title screen and file select reached 16,384 slots over 64 banks (its gameplay
++        // windows span at most 36 slots). Past a bank, drop the count as a reset would.
++        if (current_query && current_query->size_slots > SamplesQueryBank::BANK_SIZE) {
++            ResetCounter();
++        }
+     }
+ 
+     bool HasPendingSync() const override {
+diff --git a/src/video_core/renderer_vulkan/vk_scheduler.cpp b/src/video_core/renderer_vulkan/vk_scheduler.cpp
+index f23e07ec30..295897eea8 100644
+--- a/src/video_core/renderer_vulkan/vk_scheduler.cpp
++++ b/src/video_core/renderer_vulkan/vk_scheduler.cpp
+@@ -474,7 +474,9 @@ void Scheduler::InvalidateState() {
+ }
+ 
+ void Scheduler::EndPendingOperations() {
+-    query_cache->CounterReset(VideoCommon::QueryType::ZPassPixelCount64);
++    // Pause, don't reset: a submission can land between a guest's counter reset and its report,
++    // and resetting here would drop the samples counted so far (the report then reads too low).
++    query_cache->CounterClose(VideoCommon::QueryType::ZPassPixelCount64);
+     EndRenderPass();
+ }
+ 
+-- 
+2.51.0.windows.1
+
