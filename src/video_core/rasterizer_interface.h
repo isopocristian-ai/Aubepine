@@ -119,6 +119,10 @@ public:
     virtual RasterizerDownloadArea GetFlushArea(DAddr addr, u64 size) = 0;
 
     /// Notify rasterizer that any caches of the specified region should be invalidated
+    /// Called before guest memory in the region is overwritten, ahead of InvalidateRegion.
+    virtual void PrepareRegionWrite([[maybe_unused]] DAddr addr, [[maybe_unused]] u64 size,
+                                    [[maybe_unused]] VideoCommon::CacheType which) {}
+
     virtual void InvalidateRegion(DAddr addr, u64 size,
                                   VideoCommon::CacheType which = VideoCommon::CacheType::All) = 0;
 
