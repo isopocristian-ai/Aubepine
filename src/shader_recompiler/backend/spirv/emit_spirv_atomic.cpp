@@ -417,24 +417,36 @@ Id EmitStorageAtomicMaxF32x2(EmitContext& ctx, const IR::Value& binding, const I
     return ctx.OpPackHalf2x16(ctx.U32[1], result);
 }
 
-Id EmitGlobalAtomicIAdd32(EmitContext&) {
-    throw NotImplementedException("SPIR-V Instruction");
+namespace {
+// Atomics on untracked global memory go through a helper that finds the storage buffer holding
+// the address, like global loads and stores (Ocarina of Time's culling computes use them).
+// After zortos293/Lichii #87, which routes IAdd and UMax the same way.
+Id GlobalAtomic32(EmitContext& ctx, Id function, Id address, Id value) {
+    if (!Sirit::ValidId(function)) {
+        throw NotImplementedException("Global atomic with no storage buffer to route it to");
+    }
+    return ctx.OpFunctionCall(ctx.U32[1], function, address, value);
+}
+} // Anonymous namespace
+
+Id EmitGlobalAtomicIAdd32(EmitContext& ctx, Id address, Id value) {
+    return GlobalAtomic32(ctx, ctx.global_atomic_funcs_u32[GLOBAL_ATOMIC_IADD], address, value);
 }
 
-Id EmitGlobalAtomicSMin32(EmitContext&) {
-    throw NotImplementedException("SPIR-V Instruction");
+Id EmitGlobalAtomicSMin32(EmitContext& ctx, Id address, Id value) {
+    return GlobalAtomic32(ctx, ctx.global_atomic_funcs_u32[GLOBAL_ATOMIC_SMIN], address, value);
 }
 
-Id EmitGlobalAtomicUMin32(EmitContext&) {
-    throw NotImplementedException("SPIR-V Instruction");
+Id EmitGlobalAtomicUMin32(EmitContext& ctx, Id address, Id value) {
+    return GlobalAtomic32(ctx, ctx.global_atomic_funcs_u32[GLOBAL_ATOMIC_UMIN], address, value);
 }
 
-Id EmitGlobalAtomicSMax32(EmitContext&) {
-    throw NotImplementedException("SPIR-V Instruction");
+Id EmitGlobalAtomicSMax32(EmitContext& ctx, Id address, Id value) {
+    return GlobalAtomic32(ctx, ctx.global_atomic_funcs_u32[GLOBAL_ATOMIC_SMAX], address, value);
 }
 
-Id EmitGlobalAtomicUMax32(EmitContext&) {
-    throw NotImplementedException("SPIR-V Instruction");
+Id EmitGlobalAtomicUMax32(EmitContext& ctx, Id address, Id value) {
+    return GlobalAtomic32(ctx, ctx.global_atomic_funcs_u32[GLOBAL_ATOMIC_UMAX], address, value);
 }
 
 Id EmitGlobalAtomicInc32(EmitContext&) {
@@ -445,20 +457,20 @@ Id EmitGlobalAtomicDec32(EmitContext&) {
     throw NotImplementedException("SPIR-V Instruction");
 }
 
-Id EmitGlobalAtomicAnd32(EmitContext&) {
-    throw NotImplementedException("SPIR-V Instruction");
+Id EmitGlobalAtomicAnd32(EmitContext& ctx, Id address, Id value) {
+    return GlobalAtomic32(ctx, ctx.global_atomic_funcs_u32[GLOBAL_ATOMIC_AND], address, value);
 }
 
-Id EmitGlobalAtomicOr32(EmitContext&) {
-    throw NotImplementedException("SPIR-V Instruction");
+Id EmitGlobalAtomicOr32(EmitContext& ctx, Id address, Id value) {
+    return GlobalAtomic32(ctx, ctx.global_atomic_funcs_u32[GLOBAL_ATOMIC_OR], address, value);
 }
 
-Id EmitGlobalAtomicXor32(EmitContext&) {
-    throw NotImplementedException("SPIR-V Instruction");
+Id EmitGlobalAtomicXor32(EmitContext& ctx, Id address, Id value) {
+    return GlobalAtomic32(ctx, ctx.global_atomic_funcs_u32[GLOBAL_ATOMIC_XOR], address, value);
 }
 
-Id EmitGlobalAtomicExchange32(EmitContext&) {
-    throw NotImplementedException("SPIR-V Instruction");
+Id EmitGlobalAtomicExchange32(EmitContext& ctx, Id address, Id value) {
+    return GlobalAtomic32(ctx, ctx.global_atomic_funcs_u32[GLOBAL_ATOMIC_EXCHANGE], address, value);
 }
 
 Id EmitGlobalAtomicIAdd64(EmitContext&) {

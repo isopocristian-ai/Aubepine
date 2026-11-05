@@ -164,6 +164,18 @@ struct GenericElementInfo {
     u32 num_components{};
 };
 
+enum GlobalAtomicOp : size_t {
+    GLOBAL_ATOMIC_IADD,
+    GLOBAL_ATOMIC_SMIN,
+    GLOBAL_ATOMIC_UMIN,
+    GLOBAL_ATOMIC_SMAX,
+    GLOBAL_ATOMIC_UMAX,
+    GLOBAL_ATOMIC_AND,
+    GLOBAL_ATOMIC_OR,
+    GLOBAL_ATOMIC_XOR,
+    GLOBAL_ATOMIC_EXCHANGE,
+};
+
 class EmitContext final : public Sirit::Module {
 public:
     explicit EmitContext(const Profile& profile, const RuntimeInfo& runtime_info,
@@ -323,6 +335,9 @@ public:
     u32 texture_rescaling_index{};
     u32 image_rescaling_index{};
 
+    Id mesh_draw_base_push_constant{};
+    u32 mesh_draw_base_member_index{};
+
     Id render_area_push_constant{};
     u32 render_are_member_index{};
 
@@ -354,6 +369,8 @@ public:
 
     Id write_storage_cas_loop_func{};
 
+    // Indexed by GLOBAL_ATOMIC_*: helpers for 32-bit atomics on untracked global memory.
+    std::array<Id, 9> global_atomic_funcs_u32{};
     Id load_global_func_u32{};
     Id load_global_func_u32x2{};
     Id load_global_func_u32x4{};
@@ -437,11 +454,14 @@ private:
     void DefineImages(const Info& info, u32& binding, u32& scaling_index);
     void DefineAttributeMemAccess(const Info& info);
     void DefineWriteStorageCasLoopFunction(const Info& info);
-    void DefineGlobalMemoryFunctions(const Info& info);
+    void DefineGlobalMemoryFunctions(const IR::Program& program);
     void DefineRescalingInput(const Info& info);
     void DefineRescalingInputPushConstant();
     void DefineRescalingInputUniformConstant();
     void DefineRenderArea(const Info& info);
+    void DefineMeshDrawBase();
+    [[nodiscard]] bool UsesMeshDrawBase() const;
+    [[nodiscard]] u32 MeshDrawBaseOffset() const;
 
     void DefineInputs(const IR::Program& program);
     void DefineOutputs(const IR::Program& program);

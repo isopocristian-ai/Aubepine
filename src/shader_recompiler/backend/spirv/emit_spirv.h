@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <cstdlib>
 #include <vector>
 
 #include "common/common_types.h"
@@ -32,6 +33,22 @@ struct RenderAreaLayout {
 constexpr u32 RESCALING_LAYOUT_WORDS_OFFSET = offsetof(RescalingLayout, rescaling_textures);
 constexpr u32 RESCALING_LAYOUT_DOWN_FACTOR_OFFSET = offsetof(RescalingLayout, down_factor);
 constexpr u32 RENDERAREA_LAYOUT_OFFSET = offsetof(RenderAreaLayout, render_area);
+
+// A mesh draw launches workgroups first to first + count - 1 (NVN, GL_NV_mesh_shader), first
+// coming from the vertex array start; DrawMeshTasksEXT has no base, so the first stage adds it
+// from this push constant. Word 0 for a task stage, word 1 for a mesh stage without a task.
+// Off unless EDEN_NX2_MESH_FIRST=1: no title seen needs it yet (Ocarina's mesh draws start at 0). After zortos293/Lichii d7663205ba.
+constexpr u32 MESH_DRAW_BASE_OFFSET = static_cast<u32>(sizeof(RescalingLayout));
+static_assert(MESH_DRAW_BASE_OFFSET + 2 * sizeof(u32) <=
+              sizeof(RescalingLayout) + sizeof(RenderAreaLayout));
+
+inline bool MeshFirstEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_MESH_FIRST");
+        return value != nullptr && value[0] == '1';
+    }();
+    return enabled;
+}
 
 [[nodiscard]] std::vector<u32> EmitSPIRV(const Profile& profile, const RuntimeInfo& runtime_info, IR::Program& program, Bindings& bindings);
 [[nodiscard]] inline std::vector<u32> EmitSPIRV(const Profile& profile, IR::Program& program) {

@@ -493,9 +493,10 @@ EmitContext::EmitContext(const Profile& profile_, const RuntimeInfo& runtime_inf
     DefineImages(program.info, image_binding, bindings.image_scaling_index);
     DefineAttributeMemAccess(program.info);
     DefineWriteStorageCasLoopFunction(program.info);
-    DefineGlobalMemoryFunctions(program.info);
+    DefineGlobalMemoryFunctions(program);
     DefineRescalingInput(program.info);
     DefineRenderArea(program.info);
+    DefineMeshDrawBase();
 }
 
 EmitContext::~EmitContext() = default;
@@ -948,7 +949,8 @@ void EmitContext::DefineWriteStorageCasLoopFunction(const Info& info) {
     write_storage_cas_loop_func = func;
 }
 
-void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
+void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
+    const Info& info{program.info};
     if (!info.uses_global_memory || !profile.support_int64) {
         return;
     }
@@ -1053,6 +1055,61 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
         define(&StorageDefinitions::U32x2, storage_types.U32x2, U32[2], sizeof(u32[2]));
     std::tie(load_global_func_u32x4, write_global_func_u32x4) =
         define(&StorageDefinitions::U32x4, storage_types.U32x4, U32[4], sizeof(u32[4]));
+
+    // 32-bit atomics, defined only for the operations the program uses. An address outside every
+    // candidate buffer does nothing and returns 0.
+    const auto define_atomic{[&](GlobalAtomicOp index, auto operation) {
+        if (Sirit::ValidId(global_atomic_funcs_u32[index])) {
+            return;
+        }
+        const Id function_type{TypeFunction(U32[1], U64, U32[1])};
+        const Id func_id{OpFunction(U32[1], spv::FunctionControlMask::MaskNone, function_type)};
+        const Id addr{OpFunctionParameter(U64)};
+        const Id value{OpFunctionParameter(U32[1])};
+        const Id scope{Const(static_cast<u32>(spv::Scope::Device))};
+        const Id semantics{u32_zero_value};
+        define_body(&StorageDefinitions::U32, addr, storage_types.U32.element, 2, [&](Id pointer) {
+            OpReturnValue((this->*operation)(U32[1], pointer, scope, semantics, value));
+        });
+        OpReturnValue(u32_zero_value);
+        OpFunctionEnd();
+        global_atomic_funcs_u32[index] = func_id;
+    }};
+    for (const IR::Block* const block : program.blocks) {
+        for (const IR::Inst& inst : block->Instructions()) {
+            switch (inst.GetOpcode()) {
+        case IR::Opcode::GlobalAtomicIAdd32:
+            define_atomic(GLOBAL_ATOMIC_IADD, &Sirit::Module::OpAtomicIAdd);
+            break;
+        case IR::Opcode::GlobalAtomicSMin32:
+            define_atomic(GLOBAL_ATOMIC_SMIN, &Sirit::Module::OpAtomicSMin);
+            break;
+        case IR::Opcode::GlobalAtomicUMin32:
+            define_atomic(GLOBAL_ATOMIC_UMIN, &Sirit::Module::OpAtomicUMin);
+            break;
+        case IR::Opcode::GlobalAtomicSMax32:
+            define_atomic(GLOBAL_ATOMIC_SMAX, &Sirit::Module::OpAtomicSMax);
+            break;
+        case IR::Opcode::GlobalAtomicUMax32:
+            define_atomic(GLOBAL_ATOMIC_UMAX, &Sirit::Module::OpAtomicUMax);
+            break;
+        case IR::Opcode::GlobalAtomicAnd32:
+            define_atomic(GLOBAL_ATOMIC_AND, &Sirit::Module::OpAtomicAnd);
+            break;
+        case IR::Opcode::GlobalAtomicOr32:
+            define_atomic(GLOBAL_ATOMIC_OR, &Sirit::Module::OpAtomicOr);
+            break;
+        case IR::Opcode::GlobalAtomicXor32:
+            define_atomic(GLOBAL_ATOMIC_XOR, &Sirit::Module::OpAtomicXor);
+            break;
+        case IR::Opcode::GlobalAtomicExchange32:
+            define_atomic(GLOBAL_ATOMIC_EXCHANGE, &Sirit::Module::OpAtomicExchange);
+            break;
+        default:
+            break;
+            }
+        }
+    }
 }
 
 void EmitContext::DefineRescalingInput(const Info& info) {
@@ -1067,7 +1124,7 @@ void EmitContext::DefineRescalingInput(const Info& info) {
 }
 
 void EmitContext::DefineRescalingInputPushConstant() {
-    boost::container::static_vector<Id, 3> members{};
+    boost::container::static_vector<Id, 4> members{};
     u32 member_index{0};
 
     rescaling_textures_type = TypeArray(U32[1], Const(4u));
@@ -1084,9 +1141,20 @@ void EmitContext::DefineRescalingInputPushConstant() {
         members.push_back(F32[1]);
         rescaling_downfactor_member_index = member_index++;
     }
+    // An entry point uses one push constant block: the mesh draw base goes in this one.
+    const bool mesh_draw_base{UsesMeshDrawBase()};
+    if (mesh_draw_base) {
+        members.push_back(U32[1]);
+        mesh_draw_base_member_index = member_index++;
+    }
     const Id push_constant_struct{TypeStruct(std::span(members.data(), members.size()))};
     Decorate(push_constant_struct, spv::Decoration::Block);
     Name(push_constant_struct, "ResolutionInfo");
+    if (mesh_draw_base) {
+        MemberDecorate(push_constant_struct, mesh_draw_base_member_index, spv::Decoration::Offset,
+                       MeshDrawBaseOffset());
+        MemberName(push_constant_struct, mesh_draw_base_member_index, "mesh_draw_base");
+    }
 
     MemberDecorate(push_constant_struct, rescaling_textures_member_index, spv::Decoration::Offset,
                    static_cast<u32>(offsetof(RescalingLayout, rescaling_textures)));
@@ -1105,6 +1173,9 @@ void EmitContext::DefineRescalingInputPushConstant() {
     const Id pointer_type{TypePointer(spv::StorageClass::PushConstant, push_constant_struct)};
     rescaling_push_constants = AddGlobalVariable(pointer_type, spv::StorageClass::PushConstant);
     Name(rescaling_push_constants, "rescaling_push_constants");
+    if (mesh_draw_base) {
+        mesh_draw_base_push_constant = rescaling_push_constants;
+    }
 
     if (profile.supported_spirv >= 0x00010400) {
         interfaces.push_back(rescaling_push_constants);
@@ -1119,6 +1190,33 @@ void EmitContext::DefineRescalingInputUniformConstant() {
 
     if (profile.supported_spirv >= 0x00010400) {
         interfaces.push_back(rescaling_uniform_constant);
+    }
+}
+
+bool EmitContext::UsesMeshDrawBase() const {
+    return (stage == Stage::Task || stage == Stage::Mesh) && profile.unified_descriptor_binding &&
+           MeshFirstEnabled();
+}
+
+u32 EmitContext::MeshDrawBaseOffset() const {
+    return MESH_DRAW_BASE_OFFSET + (stage == Stage::Task ? 0U : 4U);
+}
+
+void EmitContext::DefineMeshDrawBase() {
+    if (!UsesMeshDrawBase() || Sirit::ValidId(mesh_draw_base_push_constant)) {
+        return; // off, or already a member of the rescaling block
+    }
+    const Id push_constant_struct{TypeStruct(U32[1])};
+    Decorate(push_constant_struct, spv::Decoration::Block);
+    Name(push_constant_struct, "MeshDrawBase");
+    MemberDecorate(push_constant_struct, 0, spv::Decoration::Offset, MeshDrawBaseOffset());
+    MemberName(push_constant_struct, 0, "mesh_draw_base");
+    mesh_draw_base_member_index = 0;
+    const Id pointer_type{TypePointer(spv::StorageClass::PushConstant, push_constant_struct)};
+    mesh_draw_base_push_constant = AddGlobalVariable(pointer_type, spv::StorageClass::PushConstant);
+    Name(mesh_draw_base_push_constant, "mesh_draw_base_push_constants");
+    if (profile.supported_spirv >= 0x00010400) {
+        interfaces.push_back(mesh_draw_base_push_constant);
     }
 }
 
