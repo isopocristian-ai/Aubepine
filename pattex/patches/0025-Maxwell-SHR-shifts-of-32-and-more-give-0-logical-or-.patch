@@ -1,0 +1,37 @@
+From d4d75cddbb3841f6c95b65c356cd40d9d12dac4c Mon Sep 17 00:00:00 2001
+From: pattex67 <33281022+pattex67@users.noreply.github.com>
+Date: Thu, 5 Nov 2026 16:09:03 +0100
+Subject: [PATCH] Maxwell SHR: shifts of 32 and more give 0 (logical) or the
+ source's sign (arithmetic)
+
+The clamp tested the sign of the oversized host shift's result, which is undefined, so a logical
+shift could come out as -1. After zortos293/Lichii c9ebb5c3af (#87).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../maxwell/translate/impl/integer_shift_right.cpp        | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/src/shader_recompiler/frontend/maxwell/translate/impl/integer_shift_right.cpp b/src/shader_recompiler/frontend/maxwell/translate/impl/integer_shift_right.cpp
+index 2dccd2ca6d..851875c79c 100644
+--- a/src/shader_recompiler/frontend/maxwell/translate/impl/integer_shift_right.cpp
++++ b/src/shader_recompiler/frontend/maxwell/translate/impl/integer_shift_right.cpp
+@@ -42,9 +42,13 @@ void SHR(TranslatorVisitor& v, u64 insn, const IR::U32& shift) {
+         const IR::U32 zero{v.ir.Imm32(0)};
+         const IR::U32 safe_bits{v.ir.Imm32(32)};
+ 
+-        const IR::U1 is_negative{v.ir.ILessThan(result, zero, true)};
++        // Shifts of 32 and more: zero for a logical shift, the sign of the source for an
++        // arithmetic one. The result of an oversized host shift is undefined, so its sign
++        // can't decide it (a logical shift could come out as -1). After zortos293/Lichii #87.
+         const IR::U1 is_safe{v.ir.ILessThan(shift, safe_bits, false)};
+-        const IR::U32 clamped_value{v.ir.Select(is_negative, v.ir.Imm32(-1), zero)};
++        const IR::U32 clamped_value{shr.is_signed == 1
++                                        ? IR::U32{v.ir.ShiftRightArithmetic(base, v.ir.Imm32(31))}
++                                        : zero};
+         result = IR::U32{v.ir.Select(is_safe, result, clamped_value)};
+     }
+     v.X(shr.dest_reg, result);
+-- 
+2.51.0.windows.1
+

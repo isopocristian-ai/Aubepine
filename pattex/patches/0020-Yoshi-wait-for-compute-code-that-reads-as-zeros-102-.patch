@@ -1,0 +1,87 @@
+From 2b2d0531e3d7147817373d4e627f4e084eb17a3e Mon Sep 17 00:00:00 2001
+From: pattex67 <33281022+pattex67@users.noreply.github.com>
+Date: Thu, 5 Nov 2026 16:08:43 +0100
+Subject: [PATCH] Yoshi: wait for compute code that reads as zeros; 102 drops
+ cached GPU writes as an unmap
+
+- A compute program read as all zeros at its first dispatch is waited for (up to 3 s, once per
+  program) instead of dropping the dispatch: Yoshi then read a null pointer and hung on a white page
+  after the Bowser Jr. movie.
+- nx2:gpu 102 drops the caches' state for the destroyed memory with UnmapMemory: since Eglantine
+  b13c4c1c0 a plain invalidation first downloads the GPU-written bytes of the pages it touches.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/core/hle/service/nx2_gsv.h  |  4 +++-
+ src/video_core/shader_cache.cpp | 30 ++++++++++++++++++++++++++++++
+ 2 files changed, 33 insertions(+), 1 deletion(-)
+
+diff --git a/src/core/hle/service/nx2_gsv.h b/src/core/hle/service/nx2_gsv.h
+index 459278ef0d..c9b82ce4b8 100644
+--- a/src/core/hle/service/nx2_gsv.h
++++ b/src/core/hle/service/nx2_gsv.h
+@@ -592,10 +592,12 @@ private:
+                 // later CPU read, over the heap data the game puts there: Yoshi's Unreal allocator
+                 // found a block header overwritten and aborted (2162-0001). Drop them once the GPU
+                 // thread has run the work queued so far, before the slot event lets the game go on.
++                // As an unmap: since Eglantine b13c4c1c0 a plain invalidation first downloads the
++                // GPU-written bytes on the pages it touches, which wrote them over the heap instead.
+                 if (const auto device =
+                         Nvidia::Devices::Nx2GpuMemoryRegistry::Get().DeviceAddressOf(address)) {
+                     system.GPU().RunInOrder([&gpu = system.GPU(), device = *device, size] {
+-                        gpu.InvalidateRegion(device, size);
++                        gpu.Renderer().ReadRasterizer()->UnmapMemory(device, size);
+                     });
+                 }
+             }
+diff --git a/src/video_core/shader_cache.cpp b/src/video_core/shader_cache.cpp
+index fa3f8f0a5f..c341d22ada 100644
+--- a/src/video_core/shader_cache.cpp
++++ b/src/video_core/shader_cache.cpp
+@@ -9,6 +9,8 @@
+ #include <cstring>
+ #include <functional>
+ #include <string>
++#include <string_view>
++#include <thread>
+ #include <unordered_set>
+ #include <fmt/ranges.h>
+ #include <array>
+@@ -236,6 +238,34 @@ const ShaderInfo* ShaderCache::ComputeShader() {
+         }
+         return shader;
+     } catch (const Shader::Exception& error) {
++        // A program that reads as all zeros at its first dispatch has not reached memory yet.
++        // Dropping that dispatch loses its output: Yoshi then reads a null pointer and hangs on a
++        // white page after the Bowser Jr. movie. Wait here for the code, up to 3 s, once per program.
++        constexpr std::string_view zero_read{"[op 000 00000000 00000000 00000000 00000000]"};
++        if (std::string_view{error.what()}.find(zero_read) != std::string_view::npos &&
++            !CaptureRetries().contains(*cpu_shader_addr)) {
++            const auto start = std::chrono::steady_clock::now();
++            while (std::chrono::steady_clock::now() - start < std::chrono::seconds{3}) {
++                std::this_thread::sleep_for(std::chrono::milliseconds{20});
++                try {
++                    ComputeEnvironment env{*kepler_compute, *gpu_memory, program_base,
++                                           qmd.program_start, {}, native_tensor_full_by_default};
++                    const ShaderInfo* const shader = MakeShaderInfo(env, *cpu_shader_addr);
++                    LOG_INFO(HW_GPU, "Native compute program {:#x} arrived {} ms after its dispatch",
++                             shader_addr,
++                             std::chrono::duration_cast<std::chrono::milliseconds>(
++                                 std::chrono::steady_clock::now() - start)
++                                 .count());
++                    return shader;
++                } catch (const Shader::Exception& retry_error) {
++                    if (std::string_view{retry_error.what()}.find(zero_read) == std::string_view::npos) {
++                        break;
++                    }
++                }
++            }
++            LOG_WARNING(HW_GPU, "Native compute program {:#x} still reads as zeros after 3 s",
++                        shader_addr);
++        }
+         // Streamed-in compute programs too: this dispatch is lost, the next ones may run.
+         if (!RetryLater(*cpu_shader_addr, error)) {
+             RememberRejection(*cpu_shader_addr);
+-- 
+2.51.0.windows.1
+

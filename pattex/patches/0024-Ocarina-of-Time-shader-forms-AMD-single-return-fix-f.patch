@@ -1,0 +1,382 @@
+From c439f0e58432a24a203986d9d2091bd4e6f23023 Mon Sep 17 00:00:00 2001
+From: pattex67 <33281022+pattex67@users.noreply.github.com>
+Date: Thu, 5 Nov 2026 16:08:59 +0100
+Subject: [PATCH] Ocarina of Time shader forms; AMD single-return fix for
+ discarding programs
+
+Own implementations, after zortos293/Lichii c9ebb5c3af (#87) and Pipe530/Lichii 2c1ad1b12a:
+- UISETP and USEL under a UPn guard (guard and old output loaded into the predicate file).
+- REDUX signed MIN/MAX; UFLO, UBREV and UPOPC on every uniform register; RED with a uniform
+  address of any type (F32 ADD).
+- UIMAD with an immediate addend (0x4a4); SEL with a uniform source (0xc07).
+- F2I of -Rs; F2IP.U8 of one value (0x243).
+- SHF.R.U64 immediate funnel without the U64 bit Maxwell reads as part of the shift.
+- ISETP.EX into a free predicate, then PSETP with the accumulated Pc into both destinations.
+- In a program with KILL, a Pc-conditional EXIT branches to the closing EXIT (AMD demote
+  handling needs one return; the fog pass blacked out the scene).
+- SPIR-V FP saturate turns NaN into zero; Maxwell SHR of 32 and more gives 0 (logical) or the
+  sign (arithmetic) instead of testing an undefined host result.
+
+Not ported: global UMax32 atomics (need Lichii #47's global atomic helpers), CALL.REL.NOINC
+capture change, 64-bit register/uniform right shifts.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../spirv/emit_spirv_floating_point.cpp       |   5 +-
+ .../frontend/ampere/lower_to_maxwell.h        | 167 +++++++++++++-----
+ 2 files changed, 123 insertions(+), 49 deletions(-)
+
+diff --git a/src/shader_recompiler/backend/spirv/emit_spirv_floating_point.cpp b/src/shader_recompiler/backend/spirv/emit_spirv_floating_point.cpp
+index 6c09843b15..a4007e38c8 100644
+--- a/src/shader_recompiler/backend/spirv/emit_spirv_floating_point.cpp
++++ b/src/shader_recompiler/backend/spirv/emit_spirv_floating_point.cpp
+@@ -196,7 +196,10 @@ Id EmitFPSaturate16(EmitContext& ctx, Id value) {
+ Id EmitFPSaturate32(EmitContext& ctx, Id value) {
+     const Id zero{ctx.Const(f32{0.0f})};
+     const Id one{ctx.Const(f32{1.0f})};
+-    return Clamp(ctx, ctx.F32[1], value, zero, one);
++    // The hardware saturate turns NaN into zero; a clamp leaves it to the host driver (after
++    // Pipe530/Lichii 2c1ad1b12a, Ocarina of Time on AMD).
++    const Id clamped{Clamp(ctx, ctx.F32[1], value, zero, one)};
++    return ctx.OpSelect(ctx.F32[1], ctx.OpIsNan(ctx.U1, value), zero, clamped);
+ }
+ 
+ Id EmitFPSaturate64(EmitContext& ctx, Id value) {
+diff --git a/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h b/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
+index 78fcaee9b3..4f3ee9c715 100644
+--- a/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
++++ b/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
+@@ -210,10 +210,14 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+     });
+     for (const auto& instruction : code) {
+         const u32 op = instruction.Bits(0, 12);
+-        uses_uniform_bank |= op == 0x3c4 || op == 0x2bd || op == 0x896 || op == 0xf60 || op == 0xc11 || op == 0xd08 || op == 0xc0c || op == 0x986 || op == 0x9a8 || op == 0xc12 || op == 0xc17 || op == 0xe24 || op == 0xc24 || op == 0xd00 || op == 0xd09 || op == 0x9c3 || op == 0xc45 || op == 0x2a4 || op == 0x891 || op == 0x890 || op == 0x290 || op == 0x28c || op == 0x88c || op == 0x287 || op == 0x887 || op == 0x958 || op == 0xab9 || op == 0xabb || op == 0x899 || op == 0xc20 || op == 0xe21 || op == 0xe23 || op == 0xc02 ||
++        uses_uniform_bank |= op == 0x3c4 || op == 0x2bd || op == 0x896 || op == 0xf60 || op == 0xc11 || op == 0xd08 || op == 0xc0c || op == 0x986 || op == 0x9a8 || op == 0xc12 || op == 0xc17 || op == 0xe24 || op == 0xc24 || op == 0xd00 || op == 0xd09 || op == 0x9c3 || op == 0xc45 || op == 0x2a4 || op == 0x4a4 || op == 0xc07 || op == 0x891 || op == 0x890 || op == 0x290 || op == 0x28c || op == 0x88c || op == 0x287 || op == 0x887 || op == 0x958 || op == 0xab9 || op == 0xabb || op == 0x899 || op == 0xc20 || op == 0xe21 || op == 0xe23 || op == 0xc02 ||
+                              op == 0x886 || op == 0x3c2 || op == 0xc82 || op == 0x882 || op == 0x292 || op == 0x092 || op == 0x892 || op == 0x291 || op == 0x981 || op == 0xc13 || op == 0xc10 || op == 0xc23 || op == 0x526 || op == 0x2be || op == 0x8a4 || op == 0xd05 || (op == 0x984 && instruction.Bits(91, 1)) || op == 0x89c || op == 0x883 || op == 0x2a5 || op == 0xd06 || op == 0xf63 || op == 0xf66 || op == 0xf6c || op == 0xf69 || op == 0xc0b || op == 0x8a5 || op == 0x299 || op == 0xc09 || (op == 0x81c && instruction.Bits(67, 1)) || op == 0xc0a || (op == 0x988 && instruction.Bits(91, 1)) ||
+                              (op == 0x83b && instruction.Bits(91, 1));
+     }
++    // KILL (0x95b) anywhere in the program: its conditional EXITs become branches to the last one.
++    const bool has_discard = std::any_of(code.begin(), code.end(), [](const auto& instruction) {
++        return instruction.Bits(0, 12) == 0x95b && instruction.Bits(12, 4) != 15;
++    });
+     const auto address_of = [](u32 index) { return 0x50U + index * 8 + ((index + 1) / 3) * 8; };
+     const auto fail = [&](u32 index, std::string_view reason) {
+         result.instructions.clear();
+@@ -313,7 +317,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+             uniform_guard = checked_guard = true;
+         }
+         u32 uniform_output = 7; // ULOP3's UPn output: computed in P(6-n), then merged into R239
+-        if (opcode == 0x2a4 || opcode == 0x8a4 || opcode == 0x891 || opcode == 0x890 || opcode == 0x290 ||
++        if (opcode == 0x2a4 || opcode == 0x4a4 || opcode == 0x8a4 || opcode == 0x891 || opcode == 0x890 || opcode == 0x290 ||
+             opcode == 0x292 || opcode == 0x092 || opcode == 0x892 || opcode == 0x291 || opcode == 0x896 || opcode == 0x8a5) {
+             if ((opcode == 0x896 || opcode == 0x8a5) && insn.Bits(12, 4) != 7)
+                 return fail(index, "native uniform arithmetic predication");
+@@ -343,7 +347,8 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+                 uniform_output = insn.Bits(81, 3);
+                 insn.words[2] = (insn.words[2] & ~(7U << 17)) | ((6 - uniform_output) << 17);
+             }
+-            opcode = opcode == 0x2a4 ? 0x224 : opcode == 0x8a4 ? 0x824 : opcode == 0x891 ? 0x811 : opcode == 0x890 ? 0x810
++            // 0x4a4: UIMAD UR, UR, imm, UR (Ocarina of Time), as IMAD with the addend immediate.
++            opcode = opcode == 0x2a4 ? 0x224 : opcode == 0x4a4 ? 0x424 : opcode == 0x8a4 ? 0x824 : opcode == 0x891 ? 0x811 : opcode == 0x890 ? 0x810
+                    : opcode == 0x292 || opcode == 0x092 ? 0x212 : opcode == 0x892 ? 0x812 : opcode == 0x291 ? 0x211
+                    : opcode == 0x896 ? 0x816 : opcode == 0x8a5 ? 0x825 : 0x210;
+         }
+@@ -1216,15 +1221,16 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+             break;
+         }
+         case 0x98e: { // RED.E.{ADD..XOR}.STRONG.GPU U32 (op in bits 87-89), register address.
+-            if ((insn.words[2] & ~0x0380003fU) == 0x0c10e100 && insn.Bits(24, 8) == 255) {
+-                // [URa + offset]: a uniform 64-bit address with a signed byte offset.
++            if ((insn.words[2] & ~0x03800e3fU) == 0x0c10e100 && insn.Bits(24, 8) == 255 && insn.Bits(73, 3) <= 5) {
++                // [URa + offset]: a uniform 64-bit address with a signed byte offset, any type
++                // (bits 73-75; Ocarina of Time adds F32).
+                 const u32 address = uniform_register(insn.Bits(64, 6));
+                 const s32 offset = static_cast<s32>(insn.Bits(40, 24) << 8) >> 8;
+                 if (address == ~0U || (address & 1) || offset < -0x80000 || offset > 0x7ffff)
+                     return fail(index, "native global reduction uniform address");
+                 emit(0xebf8000000000000ULL | predicate | insn.Bits(32, 8) | (u64{address} << 8) |
+-                     (u64{insn.Bits(87, 3)} << 23) | (u64{static_cast<u32>(offset) & 0xfffff} << 28) |
+-                     (u64{1} << 48));
++                     (u64{insn.Bits(73, 3)} << 20) | (u64{insn.Bits(87, 3)} << 23) |
++                     (u64{static_cast<u32>(offset) & 0xfffff} << 28) | (u64{1} << 48));
+                 break;
+             }
+             // Register address with a signed offset, any type (bits 73-75) and op (87-90); bit 72 = 64-bit address.
+@@ -1238,23 +1244,30 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+                  (u64{static_cast<u32>(offset) & 0xfffff} << 28) | (u64{insn.Bits(72, 1)} << 48));
+             break;
+         }
+-        case 0x2bd: // UFLO.U32, the highest set-bit index (.SH, bit 74: its shift amount).
+-            if (dest >= 16 || insn.words[1] >= 16 || (insn.words[2] & ~0x400U) != 0x080e0000 || native_predicate != 7)
+-                return fail(index, "native uniform leading bit mode");
+-            emit(0x5c30000000000000ULL | predicate | (dest + 216) | (u64{insn.words[1] + 216} << 20) |
+-                 (u64{insn.Bits(74, 1)} << 41));
+-            break;
+-        case 0x2be: // UBREV, as a bit-reversing zero shift like BREV.
+-            if (dest >= 16 || insn.words[1] >= 16 || insn.words[2] != 0x08000000 || native_predicate != 7)
+-                return fail(index, "native uniform bit reverse mode");
+-            emit(0x3828000000000000ULL | predicate | (dest + 216) | (u64{insn.words[1] + 216} << 8) |
+-                 (u64{1} << 39) | (u64{1} << 40));
+-            break;
+-        case 0x2bf: // UPOPC, as POPC of the uniform's register.
+-            if (dest >= 16 || insn.words[1] >= 16 || insn.words[2] != 0x08000000 || native_predicate != 7)
+-                return fail(index, "native uniform population count mode");
+-            emit(0x5c08000000000000ULL | predicate | (dest + 216) | (u64{insn.words[1] + 216} << 20));
++        // UFLO, UBREV and UPOPC on any uniform register (Ocarina of Time: UR16 and up), through
++        // the uniform mirrors. After zortos293/Lichii #87.
++        case 0x2bd: case 0x2be: case 0x2bf: {
++            const u32 target = uniform_register(static_cast<u32>(dest));
++            const u32 source = uniform_register(insn.Bits(32, 8));
++            const bool bad = dest == 63 || target == ~0U || source == ~0U || (insn.words[1] & ~0xffU) ||
++                             native_predicate != 7;
++            if (opcode == 0x2bd) { // UFLO.U32, the highest set-bit index (.SH, bit 74: its shift amount).
++                if (bad || (insn.words[2] & ~0x400U) != 0x080e0000)
++                    return fail(index, "native uniform leading bit mode");
++                emit(0x5c30000000000000ULL | predicate | target | (u64{source} << 20) |
++                     (u64{insn.Bits(74, 1)} << 41));
++            } else if (opcode == 0x2be) { // UBREV, as a bit-reversing zero shift like BREV.
++                if (bad || insn.words[2] != 0x08000000)
++                    return fail(index, "native uniform bit reverse mode");
++                emit(0x3828000000000000ULL | predicate | target | (u64{source} << 8) |
++                     (u64{1} << 39) | (u64{1} << 40));
++            } else { // UPOPC, as POPC of the uniform register.
++                if (bad || insn.words[2] != 0x08000000)
++                    return fail(index, "native uniform population count mode");
++                emit(0x5c08000000000000ULL | predicate | target | (u64{source} << 20));
++            }
+             break;
++        }
+         case 0x3a1: { // MATCH.ALL (.U32, or .U64 on bit 73) with only the all-equal predicate retained.
+             const u32 source = insn.Bits(24, 8), target = insn.Bits(81, 3);
+             const u32 words = insn.Bits(73, 1) ? 2 : 1;
+@@ -1294,17 +1307,24 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+         }
+         case 0x3c4: { // REDUX.SUM (modulo 2^32), .MIN/.MAX (unsigned), .OR or .XOR over the actual active lanes.
+             const u32 source = insn.Bits(24, 8), target = uniform_register(static_cast<u32>(dest));
+-            const bool maximum = insn.words[2] == 0x14000, minimum = insn.words[2] == 0x10000;
++            // Bit 73: signed MIN/MAX (Ocarina of Time), as unsigned on values with the sign bit
++            // flipped. After zortos293/Lichii #87.
++            const u32 order_mode = insn.words[2] & ~0x200U;
++            const bool maximum = order_mode == 0x14000, minimum = order_mode == 0x10000;
++            const bool signed_order = insn.Bits(73, 1) != 0;
+             // OR and XOR: inactive lanes contribute zero, as for the sum. Maxwell LOP: 1 = OR, 2 = XOR.
+             const u32 logical = insn.words[2] == 0x4000 ? 1U : insn.words[2] == 0x8000 ? 2U : 0U;
+             if (target == ~0U || target == 255 || insn.words[1] ||
+-                (insn.words[2] != 0xc000 && !maximum && !minimum && !logical) || native_predicate != 7)
++                (insn.words[2] != 0xc000 && !maximum && !minimum && !logical) ||
++                (signed_order && !maximum && !minimum) || native_predicate != 7)
+                 return fail(index, "native warp sum mode");
+             emit(0x50d8000000070000ULL | 250 | (u64{7} << 39) | (u64{7} << 45) | (u64{1} << 48));
+             mov_imm(target, minimum ? ~0U : 0U);
+             for (u32 lane = 0; lane < 32; ++lane) {
+                 emit(0xef10000000070000ULL | 251 | (u64{source} << 8) | (u64{lane} << 20) |
+                     (u64{1} << 28) | (u64{1} << 29) | (u64{31} << 34) | (u64{7} << 48));
++                if (signed_order)
++                    emit(0x0400000000070000ULL | 251 | (u64{251} << 8) | (u64{0x80000000U} << 20) | (u64{2} << 53));
+                 emit(0x3828000000070000ULL | 252 | (u64{250} << 8) | (u64{lane} << 20));
+                 emit(0x0400000000070000ULL | 252 | (u64{252} << 8) | (u64{1} << 20));
+                 emit(0x5c10000000070000ULL | 252 | (u64{255} << 8) | (u64{252} << 20) | (u64{1} << 48));
+@@ -1322,6 +1342,8 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+                     emit(0x5c10000000070000ULL | target | (u64{target} << 8) | (u64{251} << 20));
+                 }
+             }
++            if (signed_order)
++                emit(0x0400000000070000ULL | target | (u64{target} << 8) | (u64{0x80000000U} << 20) | (u64{2} << 53));
+             break;
+         }
+         case 0xf8c: { // ATOMS.POPC.INC.32 with no returned value: one increment per active lane.
+@@ -1792,16 +1814,22 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+             const u32 accum_neg = insn.Bits(90, 1);
+             const u32 set_op = insn.Bits(74, 2);
+             const u32 a = uniform_register(insn.Bits(24, 8)), b = opcode == 0x88c ? 252U : uniform_register(insn.Bits(32, 8));
+-            if (output > 6 || insn.Bits(84, 3) != 7 ||
+-                insn.Bits(72, 1) || set_op == 3 || insn.Bits(12, 4) != 7 || a == ~0U || b == ~0U)
++            // A UPn guard (Ocarina of Time: @UP4 UISETP) comes into P(6-n) with the old output, so a
++            // false guard leaves the output as it was. After zortos293/Lichii #87.
++            const bool guarded = native_predicate != 7;
++            if (output > 6 || insn.Bits(84, 3) != 7 || insn.Bits(72, 1) || set_op == 3 ||
++                (guarded && (native_predicate & 7) == 7) || a == ~0U || b == ~0U)
+                 return fail(index, "native uniform comparison mode");
+             const u32 temporary = 6 - output;
+             const u32 accum_pred = accum == 7 ? 7U : 6 - accum;
+-            const u32 mask = (1U << temporary) | (accum == 7 ? 0U : (1U << accum_pred));
+-            if (opcode == 0x88c) mov_imm(252, insn.words[1]);
++            const u32 load_mask = (accum == 7 ? 0U : (1U << accum_pred)) |
++                                  (guarded ? (1U << temporary) | (1U << guard_slot) : 0U);
++            const u32 mask = (1U << temporary) | load_mask;
++            if (opcode == 0x88c) emit(0x0100000000070000ULL | 252 | (u64{15} << 12) | (u64{insn.words[1]} << 20));
+             emit(0x38e8000000070000ULL | 253 | (u64{255} << 8) | (u64{mask} << 20));
+-            if (accum != 7) emit(0x38f0000000070000ULL | (u64{239} << 8) | (u64{1U << accum_pred} << 20));
+-            emit(0x5b60000000070000ULL | 7 | (u64{temporary} << 3) |
++            if (load_mask) emit(0x38f0000000070000ULL | (u64{239} << 8) | (u64{load_mask} << 20));
++            emit(0x5b60000000000000ULL | (u64{guarded ? (native_predicate & 8) | guard_slot : 7U} << 16) |
++                7 | (u64{temporary} << 3) |
+                 (u64{a} << 8) | (u64{b} << 20) | (u64{accum_pred} << 39) | (u64{accum_neg} << 42) |
+                 (u64{set_op} << 45) | (u64{insn.Bits(73, 1)} << 48) |
+                 (u64{insn.Bits(76, 3)} << 49));
+@@ -1813,8 +1841,9 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+             const u32 condition = insn.Bits(87, 3);
+             const u32 target = uniform_register(static_cast<u32>(dest));
+             const u32 a = uniform_register(insn.Bits(24, 8)), b = opcode == 0x887 ? 252U : uniform_register(insn.Bits(32, 8));
++            const bool guarded = native_predicate != 7;
+             if (condition > 6 || target == ~0U || a == ~0U || b == ~0U ||
+-                insn.Bits(12, 4) != 7 || (insn.words[2] & ~0x07800000U) != 0x08000000U)
++                (guarded && (native_predicate & 7) == 7) || (insn.words[2] & ~0x07800000U) != 0x08000000U)
+                 return fail(index, "native uniform select mode");
+             // The clamp's UISETP may sit a few instructions back, with only instructions between
+             // that write no uniform state and do not branch (Nintendo Switch Sports' jump tables),
+@@ -1832,7 +1861,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+             }
+             const bool target_between = std::any_of(relocations.begin(), relocations.end(),
+                 [&](const Relocation& relocation) { return relocation.target > compare && relocation.target <= index; });
+-            if (opcode == 0x887 && compare < index && !target_between && insn.words[1] <= 0x7ffff &&
++            if (opcode == 0x887 && !guarded && compare < index && !target_between && insn.words[1] <= 0x7ffff &&
+                 code[compare].Bits(12, 4) == 7 && code[compare].Bits(24, 8) == insn.Bits(24, 8) &&
+                 code[compare].Bits(81, 3) == condition && code[compare].words[1] == insn.words[1] &&
+                 (code[compare].words[2] & ~(7U << 17)) == 0x0bf01070 &&
+@@ -1842,11 +1871,14 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+                      (u64{insn.words[1]} << 20) | (u64{7} << 39));
+                 break;
+             }
+-            if (opcode == 0x887) mov_imm(252, insn.words[1]);
+-            const u32 temporary = 6 - condition, mask = 1U << temporary;
++            // A UPn guard (Ocarina of Time: @UP0 USEL) comes into P(6-n) with the condition.
++            if (opcode == 0x887) emit(0x0100000000070000ULL | 252 | (u64{15} << 12) | (u64{insn.words[1]} << 20));
++            const u32 temporary = 6 - condition;
++            const u32 mask = (1U << temporary) | (guarded ? 1U << guard_slot : 0U);
+             emit(0x38e8000000070000ULL | 253 | (u64{255} << 8) | (u64{mask} << 20));
+             emit(0x38f0000000070000ULL | (u64{239} << 8) | (u64{mask} << 20));
+-            emit(0x5ca0000000070000ULL | target | (u64{a} << 8) | (u64{b} << 20) |
++            emit(0x5ca0000000000000ULL | (u64{guarded ? (native_predicate & 8) | guard_slot : 7U} << 16) |
++                target | (u64{a} << 8) | (u64{b} << 20) |
+                 (u64{temporary} << 39) | (u64{insn.Bits(90, 1)} << 42));
+             emit(0x38f0000000070000ULL | (u64{253} << 8) | (u64{mask} << 20));
+             break;
+@@ -1958,6 +1990,12 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+                  (u64{insn.Bits(32, 8)} << 20) | (u64{insn.Bits(78, 2)} << 39));
+             break;
+         }
++        case 0x243: // F2IP.U8.F32.NTZ Rd, Rb, RZ (Ocarina of Time): one byte, as F2I.U8 of Rb.
++            if (insn.Bits(24, 8) != 255 || (insn.words[1] & ~0xffU) || insn.words[2] != 0x0000c4ffU)
++                return fail(index, "native packed float-to-byte mode");
++            insn.words[2] = 0x0021e000U;
++            opcode = 0x305;
++            [[fallthrough]];
+         case 0x305: case 0xb05: case 0xd05: { // F2I NTZ, register/constant-buffer/uniform source
+             const u32 mode = insn.words[2] & ~(opcode == 0xd05 ? 0x08000000U : 0U);
+             // F16 source: bit 72 signs the result as in the other forms, bits 60-61 pick H0/H1,
+@@ -1971,8 +2009,11 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+             const bool short_word = (mode & ~0x100U) == 0x0021e800;
+             // Bit 62: |Rs| on the register form (Hyrule Warriors: F2I.FTZ.U16.NTZ R26, |R42|).
+             const bool absolute = opcode == 0x305 && !half && insn.Bits(62, 1);
++            // Bit 63: -Rs (Ocarina of Time: F2I.U32.CEIL.NTZ R, -|R|). After zortos293/Lichii #87.
++            const bool negate = opcode == 0x305 && !half && insn.Bits(63, 1);
++            const u32 source_bits = 0xffU | (absolute ? 0x40000000U : 0U) | (negate ? 0x80000000U : 0U);
+             if ((!half && !small && !word && !byte && !short_word) ||
+-                (opcode != 0xb05 && (insn.words[1] & (half ? 0xefffff00U : absolute ? 0xbfffff00U : 0xffffff00U))) ||
++                (opcode != 0xb05 && (insn.words[1] & ~(half ? 0x100000ffU : source_bits))) ||
+                 (opcode == 0xd05 && uniform_register(insn.Bits(32, 8)) == ~0U)) {
+                 return fail(index, "native float-to-integer conversion mode");
+             }
+@@ -1983,7 +2024,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+                 extract_half({source, insn.Bits(60, 1) ? 3U : 2U, false, false}, 0, 252);
+                 source = 252;
+             }
+-            if (absolute) source = materialize(0, source, 249, true, false);
++            if (absolute || negate) source = materialize(0, source, 249, absolute, negate);
+             if (!is_signed) {
+                 // Clear NaNs without consuming a guest predicate. Clamp the
+                 // conversion below 2^32, retaining an overflow mask for saturation.
+@@ -2905,7 +2946,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+                  (u64{insn.Bits(78, 2)} << 39));
+             break;
+         }
+-        case 0x207: case 0x807: case 0xa07:
++        case 0x207: case 0x807: case 0xa07: case 0xc07: // 0xc07: uniform second source (Ocarina of Time)
+         case 0x208: case 0x808: case 0xa08: { // Bitwise SEL / FSEL
+             // FSEL applies the floating operand modifiers (negate/absolute) before selecting.
+             const bool floating = (opcode & 0x1ff) == 0x008;
+@@ -2969,18 +3010,23 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+                 // result comes in as the predicate at bits 68-70 (negated by 71), e.g.
+                 // ISETP.NE P0 = lo != 0, then ISETP.NE.EX P0 = (hi != 0) OR P0. EQ: high equal
+                 // AND low; NE: high different OR low; the orderings: high strictly ordered OR
+-                // (high equal AND low). One or two Maxwell ISETPs into the destination; only
+-                // the plain form (no second destination, AND with PT) is handled.
++                // (high equal AND low). The compare goes to a free predicate (saved in R253), then
++                // PSETP combines it with the accumulated Pc (bits 87-90, by bits 74-75) into both
++                // destinations, as ISETP's second output (the inverted compare) does. Ocarina of
++                // Time accumulates. After zortos293/Lichii #87.
+                 const u32 compare = insn.Bits(76, 3);
+-                const u32 destination = insn.Bits(81, 3);
+-                const u32 low = insn.Bits(68, 4);
+-                if (insn.Bits(84, 3) != 7 || insn.Bits(87, 4) != 7 || insn.Bits(74, 2) != 0 ||
+-                    compare == 0 || compare == 7 ||
+-                    (destination != 7 && insn.Bits(12, 3) == destination))
++                const u32 destination = insn.Bits(81, 3), second = insn.Bits(84, 3);
++                const u32 low = insn.Bits(68, 4), accumulate = insn.Bits(87, 4), combine_op = insn.Bits(74, 2);
++                if (compare == 0 || compare == 7 || combine_op == 3)
+                     return fail(index, "native extended integer comparison mode");
+                 const u32 a = operand(0, false), b = operand(1, false);
++                u32 temporary = 0;
++                while (temporary == destination || temporary == second || temporary == (low & 7) ||
++                       temporary == (accumulate & 7) || temporary == insn.Bits(12, 3))
++                    ++temporary;
++                emit(0x38e8000000070000ULL | 253 | (u64{255} << 8) | (u64{1U << temporary} << 20));
+                 const auto isetp = [&](u32 op, u32 input, u32 combine) {
+-                    return 0x5b60000000000000ULL | predicate | 7 | (u64{destination} << 3) |
++                    return 0x5b60000000000000ULL | predicate | 7 | (u64{temporary} << 3) |
+                            (u64{a} << 8) | (u64{b} << 20) | (u64{input & 7} << 39) |
+                            (u64{input >> 3} << 42) | (u64{combine} << 45) |
+                            (u64{insn.Bits(73, 1)} << 48) | (u64{op} << 49);
+@@ -2992,8 +3038,12 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+                     emit(isetp(Ne, low, Or));
+                 } else {
+                     emit(isetp(Eq, low, And));
+-                    emit(isetp(compare <= 3 ? Lt : Gt, destination, Or));
++                    emit(isetp(compare <= 3 ? Lt : Gt, temporary, Or));
+                 }
++                emit(0x5090000000000000ULL | predicate | second | (u64{destination} << 3) |
++                     (u64{temporary} << 12) | (u64{7} << 29) | (u64{accumulate & 7} << 39) |
++                     (u64{accumulate >> 3} << 42) | (u64{combine_op} << 45));
++                emit(0x38f0000000070000ULL | (u64{253} << 8) | (u64{1U << temporary} << 20));
+                 break;
+             }
+             const u32 a = operand(0, floating), b = operand(1, floating);
+@@ -3069,6 +3119,15 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+         }
+         case 0x819: { // SHF.HI, immediate shift
+             const bool is_signed = insn.Bits(73, 2) == 2;
++            if (!insn.Bits(80, 1) && insn.Bits(76, 1) && insn.Bits(73, 2) == 1 && !insn.Bits(75, 1) &&
++                insn.words[1] <= 32) {
++                // SHF.R.U64 low word (Ocarina of Time): Maxwell's funnel SHF.R of Rc:Ra. Without
++                // the U64 mode bit, which sits in the immediate field Maxwell reads (bits 20-38)
++                // and would make every shift 63; shifts up to 32 don't need it.
++                emit(base(0x38f8000000000000ULL) | (u64{insn.Bits(24, 8)} << 8) |
++                     (u64{insn.words[1]} << 20) | (u64{insn.Bits(64, 8)} << 39));
++                break;
++            }
+             if (!insn.Bits(80, 1) && !insn.Bits(76, 1) && insn.Bits(64, 8) == 255 &&
+                 insn.Bits(73, 2) == 3 && !insn.Bits(75, 1) && insn.words[1] <= 32) {
+                 emit(base(0x3848000000000000ULL) | (u64{insn.Bits(24, 8)} << 8) | (u64{insn.words[1]} << 20));
+@@ -3619,6 +3678,18 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+                     relocations.push_back({static_cast<u32>(result.instructions.size()), index + 1});
+                     emit(0xe24000000000000fULL | (u64{native_predicate ^ 8U} << 16));
+                 }
++                // In a program that discards, branch to its closing EXIT instead: the host
++                // compiler's demote handling on AMD needs a fragment shader with one return
++                // (Ocarina of Time's fog pass blacked out the scene). After Pipe530/Lichii
++                // 2c1ad1b12a.
++                const u32 last = static_cast<u32>(code.size() - 1);
++                if (has_discard && call_targets.empty() && !computed_branch && index < last &&
++                    code[last].Bits(0, 12) == 0x94d && code[last].Bits(12, 4) == 7 &&
++                    !code[last].Bits(84, 2) && code[last].Bits(87, 4) == 7) {
++                    relocations.push_back({static_cast<u32>(result.instructions.size()), static_cast<s64>(last)});
++                    emit(0xe24000000000000fULL | (u64{insn.Bits(87, 4)} << 16));
++                    break;
++                }
+                 emit(0xe30000000000000fULL | (u64{insn.Bits(87, 4)} << 16));
+                 break;
+             }
+-- 
+2.51.0.windows.1
+

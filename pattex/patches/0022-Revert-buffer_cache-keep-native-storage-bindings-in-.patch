@@ -1,0 +1,39 @@
+From c0f8a5f5e9a0dbd49ee3cc380ad1870531029b59 Mon Sep 17 00:00:00 2001
+From: pattex67 <33281022+pattex67@users.noreply.github.com>
+Date: Thu, 5 Nov 2026 16:08:52 +0100
+Subject: [PATCH] Revert "buffer_cache: keep native storage bindings in one
+ device range"
+
+This reverts commit 979d652d90393d23fe4a7762f0f95e785d28cdd6.
+---
+ src/video_core/buffer_cache/buffer_cache.h | 14 ++++++++++----
+ 1 file changed, 10 insertions(+), 4 deletions(-)
+
+diff --git a/src/video_core/buffer_cache/buffer_cache.h b/src/video_core/buffer_cache/buffer_cache.h
+index 55eab79a18..c6f0674822 100644
+--- a/src/video_core/buffer_cache/buffer_cache.h
++++ b/src/video_core/buffer_cache/buffer_cache.h
+@@ -2585,10 +2585,16 @@ Binding BufferCache<P>::StorageBufferBinding(GPUVAddr ssbo_addr, u32 cbuf_index,
+         }
+         return (std::min)(memory_layout_size, static_cast<u32>(8_MiB));
+     }();
+-    if (native_pointer && size != 0) {
+-        // Stop where the mapping or its device range does: the binding is one device range, and
+-        // a written one isn't split into separate ranges without sparse sources.
+-        size = static_cast<u32>(gpu_memory->MaxContinuousRange(gpu_addr, size));
++    if (native_pointer && size != 0 && !gpu_memory->IsFullyMappedRange(gpu_addr, size)) {
++        // Stop where the mapping does.
++        u32 mapped_prefix = 0;
++        for (const auto& [address, length] : gpu_memory->GetSubmappedRange(gpu_addr, size)) {
++            if (address != gpu_addr + mapped_prefix) {
++                break;
++            }
++            mapped_prefix += static_cast<u32>(length);
++        }
++        size = mapped_prefix;
+     }
+ 
+     // Alignment only applies to the offset of the buffer
+-- 
+2.51.0.windows.1
+

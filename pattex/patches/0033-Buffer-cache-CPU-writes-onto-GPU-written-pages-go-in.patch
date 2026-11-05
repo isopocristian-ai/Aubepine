@@ -1,0 +1,165 @@
+From daab36c85f83ef4eb792fb02bee42c41d20af4d9 Mon Sep 17 00:00:00 2001
+From: pattex67 <33281022+pattex67@users.noreply.github.com>
+Date: Thu, 5 Nov 2026 16:09:06 +0100
+Subject: [PATCH] Buffer cache: CPU writes onto GPU-written pages go into the
+ buffer for Switch 2 titles
+
+Instead of downloading the page first (which finishes the scheduler and waits for the host GPU),
+the written bytes are read from guest memory and uploaded into the buffer, as CachedWriteMemory
+does; the page keeps its GPU-written bytes. MemoryManager writes now cancel pending downloads
+before the copy and invalidate after it, so the bytes are there. Ocarina of Time's forest: 17-20
+ms frames instead of 23-26. EDEN_NX2_INLINE_PAGE_WRITES=0/1 forces the choice. After
+zortos293/Lichii #103 (3165a2b6f3).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/video_core/buffer_cache/buffer_cache.h     | 18 ++++++++++++++++++
+ .../buffer_cache/buffer_cache_base.h           |  4 +++-
+ src/video_core/memory_manager.cpp              | 12 ++++++++++--
+ src/video_core/rasterizer_interface.h          |  4 ++++
+ .../renderer_vulkan/vk_rasterizer.cpp          |  8 ++++++++
+ src/video_core/renderer_vulkan/vk_rasterizer.h |  1 +
+ 6 files changed, 44 insertions(+), 3 deletions(-)
+
+diff --git a/src/video_core/buffer_cache/buffer_cache.h b/src/video_core/buffer_cache/buffer_cache.h
+index 881ae5ced9..b618cbc121 100644
+--- a/src/video_core/buffer_cache/buffer_cache.h
++++ b/src/video_core/buffer_cache/buffer_cache.h
+@@ -196,6 +196,24 @@ void BufferCache<P>::WriteMemory(DAddr device_addr, u64 size, bool keep_page_gpu
+     const DAddr page_begin = Common::AlignDown(device_addr, DEVICE_PAGESIZE);
+     const DAddr page_end = Common::AlignUp(device_addr + size, DEVICE_PAGESIZE);
+     if (keep_page_gpu_data && gpu_modified_ranges.Intersects(page_begin, page_end - page_begin)) {
++        // Switch 2 titles: the CPU's bytes go into the buffer instead, as CachedWriteMemory does.
++        // The page stays GPU-owned with its GPU-written bytes, and nothing waits for the host GPU.
++        // Each download finished the scheduler: Ocarina of Time writes next to GPU data about 230
++        // times a second, which kept the split's back thread waiting most of the time. The guest
++        // memory holds the new bytes by now (MemoryManager writes before invalidating).
++        // EDEN_NX2_INLINE_PAGE_WRITES=0/1 forces the choice. After zortos293/Lichii #103.
++        static const int forced = [] {
++            const char* value = std::getenv("EDEN_NX2_INLINE_PAGE_WRITES");
++            return value == nullptr ? -1 : (value[0] == '0' ? 0 : 1);
++        }();
++        const bool inline_writes =
++            forced >= 0 ? forced == 1 : Tegra::g_nx2_ampere.load(std::memory_order_relaxed);
++        if (inline_writes && IsRegionRegistered(device_addr, size)) {
++            tmp_buffer.resize_destructive(size);
++            device_memory.ReadBlockUnsafe(device_addr, tmp_buffer.data(), size);
++            InlineMemoryImplementation(device_addr, size, tmp_buffer);
++            return;
++        }
+         DownloadMemory(page_begin, page_end - page_begin);
+     }
+     memory_tracker.MarkRegionAsCpuModified(device_addr, size);
+diff --git a/src/video_core/buffer_cache/buffer_cache_base.h b/src/video_core/buffer_cache/buffer_cache_base.h
+index 3854046158..12a5301a28 100644
+--- a/src/video_core/buffer_cache/buffer_cache_base.h
++++ b/src/video_core/buffer_cache/buffer_cache_base.h
+@@ -246,6 +246,9 @@ public:
+ 
+     void CachedWriteMemory(DAddr device_addr, u64 size);
+ 
++    /// Cancels pending downloads over the range, so a fence can't write them over newer bytes.
++    void ClearDownload(DAddr base_addr, u64 size);
++
+     bool OnCPUWrite(DAddr device_addr, u64 size);
+ 
+     void DownloadMemory(DAddr device_addr, u64 size);
+@@ -543,7 +546,6 @@ private:
+     /// Re-dirties repacked vertex buffers whose source data was written since they were bound.
+     void RefreshRepackedVertexBuffers();
+ 
+-    void ClearDownload(DAddr base_addr, u64 size);
+ 
+     void InlineMemoryImplementation(DAddr dest_address, size_t copy_size,
+                                     std::span<const u8> inlined_buffer);
+diff --git a/src/video_core/memory_manager.cpp b/src/video_core/memory_manager.cpp
+index ae64372b9c..fbe5e1c6dd 100644
+--- a/src/video_core/memory_manager.cpp
++++ b/src/video_core/memory_manager.cpp
+@@ -485,20 +485,25 @@ void MemoryManager::WriteBlockImpl(GPUVAddr gpu_dest_addr, const void* src_buffe
+     auto just_advance = [&]([[maybe_unused]] std::size_t page_index, [[maybe_unused]] std::size_t offset, std::size_t copy_amount) {
+         src_buffer = static_cast<const u8*>(src_buffer) + copy_amount;
+     };
++    // Pending downloads are cancelled before the copy and the caches invalidated after it, so the
++    // buffer cache can take the written bytes from guest memory (after zortos293/Lichii #103).
+     auto mapped_normal = [&](std::size_t page_index, std::size_t offset, std::size_t copy_amount) {
+         const DAddr dev_addr_base = (DAddr(page_table[page_index]) << cpu_page_bits) + offset;
+         if (!unsafe) {
+-            rasterizer->InvalidateRegion(dev_addr_base, copy_amount, which);
++            rasterizer->PrepareRegionWrite(dev_addr_base, copy_amount, which);
+         }
+         if (u8* physical = memory.GetPointer<u8>(dev_addr_base)) [[likely]] {
+             std::memcpy(physical, src_buffer, copy_amount);
+         }
++        if (!unsafe) {
++            rasterizer->InvalidateRegion(dev_addr_base, copy_amount, which);
++        }
+         src_buffer = static_cast<const u8*>(src_buffer) + copy_amount;
+     };
+     auto mapped_big = [&](std::size_t page_index, std::size_t offset, std::size_t copy_amount) {
+         const DAddr dev_addr_base = (DAddr(big_page_table_dev[page_index]) << cpu_page_bits) + offset;
+         if (!unsafe) {
+-            rasterizer->InvalidateRegion(dev_addr_base, copy_amount, which);
++            rasterizer->PrepareRegionWrite(dev_addr_base, copy_amount, which);
+         }
+         u8* const physical = IsBigPageContinuous(page_index) ? memory.GetPointer<u8>(dev_addr_base)
+                                                              : nullptr;
+@@ -507,6 +512,9 @@ void MemoryManager::WriteBlockImpl(GPUVAddr gpu_dest_addr, const void* src_buffe
+         } else {
+             memory.WriteBlockUnsafe(dev_addr_base, src_buffer, copy_amount);
+         }
++        if (!unsafe) {
++            rasterizer->InvalidateRegion(dev_addr_base, copy_amount, which);
++        }
+         src_buffer = static_cast<const u8*>(src_buffer) + copy_amount;
+     };
+     auto write_short_pages = [&](std::size_t page_index, std::size_t offset, std::size_t copy_amount) {
+diff --git a/src/video_core/rasterizer_interface.h b/src/video_core/rasterizer_interface.h
+index 610de16d0d..2a57243272 100644
+--- a/src/video_core/rasterizer_interface.h
++++ b/src/video_core/rasterizer_interface.h
+@@ -119,6 +119,10 @@ public:
+     virtual RasterizerDownloadArea GetFlushArea(DAddr addr, u64 size) = 0;
+ 
+     /// Notify rasterizer that any caches of the specified region should be invalidated
++    /// Called before guest memory in the region is overwritten, ahead of InvalidateRegion.
++    virtual void PrepareRegionWrite([[maybe_unused]] DAddr addr, [[maybe_unused]] u64 size,
++                                    [[maybe_unused]] VideoCommon::CacheType which) {}
++
+     virtual void InvalidateRegion(DAddr addr, u64 size,
+                                   VideoCommon::CacheType which = VideoCommon::CacheType::All) = 0;
+ 
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index f83cc70215..d3129cb0e2 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -1288,6 +1288,14 @@ VideoCore::RasterizerDownloadArea RasterizerVulkan::GetFlushArea(DAddr addr, u64
+     return new_area;
+ }
+ 
++void RasterizerVulkan::PrepareRegionWrite(DAddr addr, u64 size, VideoCommon::CacheType which) {
++    if (addr == 0 || size == 0 || False(which & VideoCommon::CacheType::BufferCache)) {
++        return;
++    }
++    std::scoped_lock lock{buffer_cache.mutex};
++    buffer_cache.ClearDownload(addr, size);
++}
++
+ void RasterizerVulkan::InvalidateRegion(DAddr addr, u64 size, VideoCommon::CacheType which) {
+     if (addr == 0 || size == 0) {
+         return;
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.h b/src/video_core/renderer_vulkan/vk_rasterizer.h
+index cf4895e435..5348e90b5a 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.h
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.h
+@@ -105,6 +105,7 @@ public:
+     bool MustFlushRegion(DAddr addr, u64 size,
+                          VideoCommon::CacheType which = VideoCommon::CacheType::All) override;
+     VideoCore::RasterizerDownloadArea GetFlushArea(DAddr addr, u64 size) override;
++    void PrepareRegionWrite(DAddr addr, u64 size, VideoCommon::CacheType which) override;
+     void InvalidateRegion(DAddr addr, u64 size,
+                           VideoCommon::CacheType which = VideoCommon::CacheType::All) override;
+     void InnerInvalidation(std::span<const std::pair<DAddr, std::size_t>> sequences) override;
+-- 
+2.51.0.windows.1
+

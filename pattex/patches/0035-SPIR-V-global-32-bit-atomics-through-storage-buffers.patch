@@ -1,0 +1,525 @@
+From 690ca4d4709f587c39005cdfd8a7f8f483752d88 Mon Sep 17 00:00:00 2001
+From: pattex67 <33281022+pattex67@users.noreply.github.com>
+Date: Thu, 5 Nov 2026 16:09:07 +0100
+Subject: [PATCH] SPIR-V: global 32-bit atomics through storage buffers;
+ task/mesh push constants
+
+- Atomics on untracked global memory (add, min, max, and, or, xor, exchange) go
+  through a helper that finds the storage buffer holding the address, like
+  global loads and stores. Three Ocarina of Time forest computes failed to build
+  without them. After zortos293/Lichii #87, which routes add and max.
+- Task and mesh stages are in the push constant range and pushes of a mesh
+  pipeline (after Djihads80/Eglantine #472, via Lichii #62).
+- EDEN_NX2_MESH_FIRST=1 adds the draw's first vertex to the first stage's
+  workgroup index (after zortos293/Lichii d7663205ba). Off by default.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../backend/spirv/emit_spirv.h                |  17 +++
+ .../backend/spirv/emit_spirv_atomic.cpp       |  48 +++++---
+ .../backend/spirv/emit_spirv_instructions.h   |  18 +--
+ .../backend/spirv/emit_spirv_mesh.cpp         |   9 +-
+ .../backend/spirv/spirv_emit_context.cpp      | 104 +++++++++++++++++-
+ .../backend/spirv/spirv_emit_context.h        |  22 +++-
+ .../renderer_vulkan/pipeline_helper.h         |  10 +-
+ .../renderer_vulkan/vk_graphics_pipeline.cpp  |  33 ++++--
+ 8 files changed, 220 insertions(+), 41 deletions(-)
+
+diff --git a/src/shader_recompiler/backend/spirv/emit_spirv.h b/src/shader_recompiler/backend/spirv/emit_spirv.h
+index c88f07c9ce..3c3f714909 100644
+--- a/src/shader_recompiler/backend/spirv/emit_spirv.h
++++ b/src/shader_recompiler/backend/spirv/emit_spirv.h
+@@ -6,6 +6,7 @@
+ 
+ #pragma once
+ 
++#include <cstdlib>
+ #include <vector>
+ 
+ #include "common/common_types.h"
+@@ -33,6 +34,22 @@ constexpr u32 RESCALING_LAYOUT_WORDS_OFFSET = offsetof(RescalingLayout, rescalin
+ constexpr u32 RESCALING_LAYOUT_DOWN_FACTOR_OFFSET = offsetof(RescalingLayout, down_factor);
+ constexpr u32 RENDERAREA_LAYOUT_OFFSET = offsetof(RenderAreaLayout, render_area);
+ 
++// A mesh draw launches workgroups first to first + count - 1 (NVN, GL_NV_mesh_shader), first
++// coming from the vertex array start; DrawMeshTasksEXT has no base, so the first stage adds it
++// from this push constant. Word 0 for a task stage, word 1 for a mesh stage without a task.
++// Off unless EDEN_NX2_MESH_FIRST=1: no title seen needs it yet (Ocarina's mesh draws start at 0). After zortos293/Lichii d7663205ba.
++constexpr u32 MESH_DRAW_BASE_OFFSET = static_cast<u32>(sizeof(RescalingLayout));
++static_assert(MESH_DRAW_BASE_OFFSET + 2 * sizeof(u32) <=
++              sizeof(RescalingLayout) + sizeof(RenderAreaLayout));
++
++inline bool MeshFirstEnabled() {
++    static const bool enabled = [] {
++        const char* value = std::getenv("EDEN_NX2_MESH_FIRST");
++        return value != nullptr && value[0] == '1';
++    }();
++    return enabled;
++}
++
+ [[nodiscard]] std::vector<u32> EmitSPIRV(const Profile& profile, const RuntimeInfo& runtime_info, IR::Program& program, Bindings& bindings);
+ [[nodiscard]] inline std::vector<u32> EmitSPIRV(const Profile& profile, IR::Program& program) {
+     Bindings binding;
+diff --git a/src/shader_recompiler/backend/spirv/emit_spirv_atomic.cpp b/src/shader_recompiler/backend/spirv/emit_spirv_atomic.cpp
+index d1c08c1131..b6f80238eb 100644
+--- a/src/shader_recompiler/backend/spirv/emit_spirv_atomic.cpp
++++ b/src/shader_recompiler/backend/spirv/emit_spirv_atomic.cpp
+@@ -417,24 +417,36 @@ Id EmitStorageAtomicMaxF32x2(EmitContext& ctx, const IR::Value& binding, const I
+     return ctx.OpPackHalf2x16(ctx.U32[1], result);
+ }
+ 
+-Id EmitGlobalAtomicIAdd32(EmitContext&) {
+-    throw NotImplementedException("SPIR-V Instruction");
++namespace {
++// Atomics on untracked global memory go through a helper that finds the storage buffer holding
++// the address, like global loads and stores (Ocarina of Time's culling computes use them).
++// After zortos293/Lichii #87, which routes IAdd and UMax the same way.
++Id GlobalAtomic32(EmitContext& ctx, Id function, Id address, Id value) {
++    if (!Sirit::ValidId(function)) {
++        throw NotImplementedException("Global atomic with no storage buffer to route it to");
++    }
++    return ctx.OpFunctionCall(ctx.U32[1], function, address, value);
+ }
++} // Anonymous namespace
+ 
+-Id EmitGlobalAtomicSMin32(EmitContext&) {
+-    throw NotImplementedException("SPIR-V Instruction");
++Id EmitGlobalAtomicIAdd32(EmitContext& ctx, Id address, Id value) {
++    return GlobalAtomic32(ctx, ctx.global_atomic_funcs_u32[GLOBAL_ATOMIC_IADD], address, value);
+ }
+ 
+-Id EmitGlobalAtomicUMin32(EmitContext&) {
+-    throw NotImplementedException("SPIR-V Instruction");
++Id EmitGlobalAtomicSMin32(EmitContext& ctx, Id address, Id value) {
++    return GlobalAtomic32(ctx, ctx.global_atomic_funcs_u32[GLOBAL_ATOMIC_SMIN], address, value);
+ }
+ 
+-Id EmitGlobalAtomicSMax32(EmitContext&) {
+-    throw NotImplementedException("SPIR-V Instruction");
++Id EmitGlobalAtomicUMin32(EmitContext& ctx, Id address, Id value) {
++    return GlobalAtomic32(ctx, ctx.global_atomic_funcs_u32[GLOBAL_ATOMIC_UMIN], address, value);
+ }
+ 
+-Id EmitGlobalAtomicUMax32(EmitContext&) {
+-    throw NotImplementedException("SPIR-V Instruction");
++Id EmitGlobalAtomicSMax32(EmitContext& ctx, Id address, Id value) {
++    return GlobalAtomic32(ctx, ctx.global_atomic_funcs_u32[GLOBAL_ATOMIC_SMAX], address, value);
++}
++
++Id EmitGlobalAtomicUMax32(EmitContext& ctx, Id address, Id value) {
++    return GlobalAtomic32(ctx, ctx.global_atomic_funcs_u32[GLOBAL_ATOMIC_UMAX], address, value);
+ }
+ 
+ Id EmitGlobalAtomicInc32(EmitContext&) {
+@@ -445,20 +457,20 @@ Id EmitGlobalAtomicDec32(EmitContext&) {
+     throw NotImplementedException("SPIR-V Instruction");
+ }
+ 
+-Id EmitGlobalAtomicAnd32(EmitContext&) {
+-    throw NotImplementedException("SPIR-V Instruction");
++Id EmitGlobalAtomicAnd32(EmitContext& ctx, Id address, Id value) {
++    return GlobalAtomic32(ctx, ctx.global_atomic_funcs_u32[GLOBAL_ATOMIC_AND], address, value);
+ }
+ 
+-Id EmitGlobalAtomicOr32(EmitContext&) {
+-    throw NotImplementedException("SPIR-V Instruction");
++Id EmitGlobalAtomicOr32(EmitContext& ctx, Id address, Id value) {
++    return GlobalAtomic32(ctx, ctx.global_atomic_funcs_u32[GLOBAL_ATOMIC_OR], address, value);
+ }
+ 
+-Id EmitGlobalAtomicXor32(EmitContext&) {
+-    throw NotImplementedException("SPIR-V Instruction");
++Id EmitGlobalAtomicXor32(EmitContext& ctx, Id address, Id value) {
++    return GlobalAtomic32(ctx, ctx.global_atomic_funcs_u32[GLOBAL_ATOMIC_XOR], address, value);
+ }
+ 
+-Id EmitGlobalAtomicExchange32(EmitContext&) {
+-    throw NotImplementedException("SPIR-V Instruction");
++Id EmitGlobalAtomicExchange32(EmitContext& ctx, Id address, Id value) {
++    return GlobalAtomic32(ctx, ctx.global_atomic_funcs_u32[GLOBAL_ATOMIC_EXCHANGE], address, value);
+ }
+ 
+ Id EmitGlobalAtomicIAdd64(EmitContext&) {
+diff --git a/src/shader_recompiler/backend/spirv/emit_spirv_instructions.h b/src/shader_recompiler/backend/spirv/emit_spirv_instructions.h
+index b1d8ca707a..95d5cd7f05 100644
+--- a/src/shader_recompiler/backend/spirv/emit_spirv_instructions.h
++++ b/src/shader_recompiler/backend/spirv/emit_spirv_instructions.h
+@@ -422,17 +422,17 @@ Id EmitStorageAtomicMaxF16x2(EmitContext& ctx, const IR::Value& binding, const I
+                              Id value);
+ Id EmitStorageAtomicMaxF32x2(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset,
+                              Id value);
+-Id EmitGlobalAtomicIAdd32(EmitContext& ctx);
+-Id EmitGlobalAtomicSMin32(EmitContext& ctx);
+-Id EmitGlobalAtomicUMin32(EmitContext& ctx);
+-Id EmitGlobalAtomicSMax32(EmitContext& ctx);
+-Id EmitGlobalAtomicUMax32(EmitContext& ctx);
++Id EmitGlobalAtomicIAdd32(EmitContext& ctx, Id address, Id value);
++Id EmitGlobalAtomicSMin32(EmitContext& ctx, Id address, Id value);
++Id EmitGlobalAtomicUMin32(EmitContext& ctx, Id address, Id value);
++Id EmitGlobalAtomicSMax32(EmitContext& ctx, Id address, Id value);
++Id EmitGlobalAtomicUMax32(EmitContext& ctx, Id address, Id value);
+ Id EmitGlobalAtomicInc32(EmitContext& ctx);
+ Id EmitGlobalAtomicDec32(EmitContext& ctx);
+-Id EmitGlobalAtomicAnd32(EmitContext& ctx);
+-Id EmitGlobalAtomicOr32(EmitContext& ctx);
+-Id EmitGlobalAtomicXor32(EmitContext& ctx);
+-Id EmitGlobalAtomicExchange32(EmitContext& ctx);
++Id EmitGlobalAtomicAnd32(EmitContext& ctx, Id address, Id value);
++Id EmitGlobalAtomicOr32(EmitContext& ctx, Id address, Id value);
++Id EmitGlobalAtomicXor32(EmitContext& ctx, Id address, Id value);
++Id EmitGlobalAtomicExchange32(EmitContext& ctx, Id address, Id value);
+ Id EmitGlobalAtomicIAdd64(EmitContext& ctx);
+ Id EmitGlobalAtomicSMin64(EmitContext& ctx);
+ Id EmitGlobalAtomicUMin64(EmitContext& ctx);
+diff --git a/src/shader_recompiler/backend/spirv/emit_spirv_mesh.cpp b/src/shader_recompiler/backend/spirv/emit_spirv_mesh.cpp
+index 6c599528cc..1e29a630fb 100644
+--- a/src/shader_recompiler/backend/spirv/emit_spirv_mesh.cpp
++++ b/src/shader_recompiler/backend/spirv/emit_spirv_mesh.cpp
+@@ -169,8 +169,15 @@ void MeshEpilogue(EmitContext& ctx) {
+ } // Anonymous namespace
+ 
+ Id EmitIsbeRead(EmitContext& ctx, Id address) {
+-    const Id workgroup{
++    Id workgroup{
+         ctx.OpCompositeExtract(ctx.U32[1], ctx.OpLoad(ctx.U32[3], ctx.workgroup_id), 0U)};
++    if (Sirit::ValidId(ctx.mesh_draw_base_push_constant)) {
++        // The draw's first workgroup (zero for a mesh stage that has a task stage).
++        const Id pointer{ctx.OpAccessChain(
++            ctx.TypePointer(spv::StorageClass::PushConstant, ctx.U32[1]),
++            ctx.mesh_draw_base_push_constant, ctx.Const(ctx.mesh_draw_base_member_index))};
++        workgroup = ctx.OpIAdd(ctx.U32[1], workgroup, ctx.OpLoad(ctx.U32[1], pointer));
++    }
+     if (ctx.stage == Stage::Task) {
+         return workgroup; // the input region holds the workgroup index (VERTEX_ID)
+     }
+diff --git a/src/shader_recompiler/backend/spirv/spirv_emit_context.cpp b/src/shader_recompiler/backend/spirv/spirv_emit_context.cpp
+index f8f966a6b5..0b20bc32b8 100644
+--- a/src/shader_recompiler/backend/spirv/spirv_emit_context.cpp
++++ b/src/shader_recompiler/backend/spirv/spirv_emit_context.cpp
+@@ -493,9 +493,10 @@ EmitContext::EmitContext(const Profile& profile_, const RuntimeInfo& runtime_inf
+     DefineImages(program.info, image_binding, bindings.image_scaling_index);
+     DefineAttributeMemAccess(program.info);
+     DefineWriteStorageCasLoopFunction(program.info);
+-    DefineGlobalMemoryFunctions(program.info);
++    DefineGlobalMemoryFunctions(program);
+     DefineRescalingInput(program.info);
+     DefineRenderArea(program.info);
++    DefineMeshDrawBase();
+ }
+ 
+ EmitContext::~EmitContext() = default;
+@@ -948,7 +949,8 @@ void EmitContext::DefineWriteStorageCasLoopFunction(const Info& info) {
+     write_storage_cas_loop_func = func;
+ }
+ 
+-void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
++void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
++    const Info& info{program.info};
+     if (!info.uses_global_memory || !profile.support_int64) {
+         return;
+     }
+@@ -1053,6 +1055,61 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
+         define(&StorageDefinitions::U32x2, storage_types.U32x2, U32[2], sizeof(u32[2]));
+     std::tie(load_global_func_u32x4, write_global_func_u32x4) =
+         define(&StorageDefinitions::U32x4, storage_types.U32x4, U32[4], sizeof(u32[4]));
++
++    // 32-bit atomics, defined only for the operations the program uses. An address outside every
++    // candidate buffer does nothing and returns 0.
++    const auto define_atomic{[&](GlobalAtomicOp index, auto operation) {
++        if (Sirit::ValidId(global_atomic_funcs_u32[index])) {
++            return;
++        }
++        const Id function_type{TypeFunction(U32[1], U64, U32[1])};
++        const Id func_id{OpFunction(U32[1], spv::FunctionControlMask::MaskNone, function_type)};
++        const Id addr{OpFunctionParameter(U64)};
++        const Id value{OpFunctionParameter(U32[1])};
++        const Id scope{Const(static_cast<u32>(spv::Scope::Device))};
++        const Id semantics{u32_zero_value};
++        define_body(&StorageDefinitions::U32, addr, storage_types.U32.element, 2, [&](Id pointer) {
++            OpReturnValue((this->*operation)(U32[1], pointer, scope, semantics, value));
++        });
++        OpReturnValue(u32_zero_value);
++        OpFunctionEnd();
++        global_atomic_funcs_u32[index] = func_id;
++    }};
++    for (const IR::Block* const block : program.blocks) {
++        for (const IR::Inst& inst : block->Instructions()) {
++            switch (inst.GetOpcode()) {
++        case IR::Opcode::GlobalAtomicIAdd32:
++            define_atomic(GLOBAL_ATOMIC_IADD, &Sirit::Module::OpAtomicIAdd);
++            break;
++        case IR::Opcode::GlobalAtomicSMin32:
++            define_atomic(GLOBAL_ATOMIC_SMIN, &Sirit::Module::OpAtomicSMin);
++            break;
++        case IR::Opcode::GlobalAtomicUMin32:
++            define_atomic(GLOBAL_ATOMIC_UMIN, &Sirit::Module::OpAtomicUMin);
++            break;
++        case IR::Opcode::GlobalAtomicSMax32:
++            define_atomic(GLOBAL_ATOMIC_SMAX, &Sirit::Module::OpAtomicSMax);
++            break;
++        case IR::Opcode::GlobalAtomicUMax32:
++            define_atomic(GLOBAL_ATOMIC_UMAX, &Sirit::Module::OpAtomicUMax);
++            break;
++        case IR::Opcode::GlobalAtomicAnd32:
++            define_atomic(GLOBAL_ATOMIC_AND, &Sirit::Module::OpAtomicAnd);
++            break;
++        case IR::Opcode::GlobalAtomicOr32:
++            define_atomic(GLOBAL_ATOMIC_OR, &Sirit::Module::OpAtomicOr);
++            break;
++        case IR::Opcode::GlobalAtomicXor32:
++            define_atomic(GLOBAL_ATOMIC_XOR, &Sirit::Module::OpAtomicXor);
++            break;
++        case IR::Opcode::GlobalAtomicExchange32:
++            define_atomic(GLOBAL_ATOMIC_EXCHANGE, &Sirit::Module::OpAtomicExchange);
++            break;
++        default:
++            break;
++            }
++        }
++    }
+ }
+ 
+ void EmitContext::DefineRescalingInput(const Info& info) {
+@@ -1067,7 +1124,7 @@ void EmitContext::DefineRescalingInput(const Info& info) {
+ }
+ 
+ void EmitContext::DefineRescalingInputPushConstant() {
+-    boost::container::static_vector<Id, 3> members{};
++    boost::container::static_vector<Id, 4> members{};
+     u32 member_index{0};
+ 
+     rescaling_textures_type = TypeArray(U32[1], Const(4u));
+@@ -1084,9 +1141,20 @@ void EmitContext::DefineRescalingInputPushConstant() {
+         members.push_back(F32[1]);
+         rescaling_downfactor_member_index = member_index++;
+     }
++    // An entry point uses one push constant block: the mesh draw base goes in this one.
++    const bool mesh_draw_base{UsesMeshDrawBase()};
++    if (mesh_draw_base) {
++        members.push_back(U32[1]);
++        mesh_draw_base_member_index = member_index++;
++    }
+     const Id push_constant_struct{TypeStruct(std::span(members.data(), members.size()))};
+     Decorate(push_constant_struct, spv::Decoration::Block);
+     Name(push_constant_struct, "ResolutionInfo");
++    if (mesh_draw_base) {
++        MemberDecorate(push_constant_struct, mesh_draw_base_member_index, spv::Decoration::Offset,
++                       MeshDrawBaseOffset());
++        MemberName(push_constant_struct, mesh_draw_base_member_index, "mesh_draw_base");
++    }
+ 
+     MemberDecorate(push_constant_struct, rescaling_textures_member_index, spv::Decoration::Offset,
+                    static_cast<u32>(offsetof(RescalingLayout, rescaling_textures)));
+@@ -1105,6 +1173,9 @@ void EmitContext::DefineRescalingInputPushConstant() {
+     const Id pointer_type{TypePointer(spv::StorageClass::PushConstant, push_constant_struct)};
+     rescaling_push_constants = AddGlobalVariable(pointer_type, spv::StorageClass::PushConstant);
+     Name(rescaling_push_constants, "rescaling_push_constants");
++    if (mesh_draw_base) {
++        mesh_draw_base_push_constant = rescaling_push_constants;
++    }
+ 
+     if (profile.supported_spirv >= 0x00010400) {
+         interfaces.push_back(rescaling_push_constants);
+@@ -1122,6 +1193,33 @@ void EmitContext::DefineRescalingInputUniformConstant() {
+     }
+ }
+ 
++bool EmitContext::UsesMeshDrawBase() const {
++    return (stage == Stage::Task || stage == Stage::Mesh) && profile.unified_descriptor_binding &&
++           MeshFirstEnabled();
++}
++
++u32 EmitContext::MeshDrawBaseOffset() const {
++    return MESH_DRAW_BASE_OFFSET + (stage == Stage::Task ? 0U : 4U);
++}
++
++void EmitContext::DefineMeshDrawBase() {
++    if (!UsesMeshDrawBase() || Sirit::ValidId(mesh_draw_base_push_constant)) {
++        return; // off, or already a member of the rescaling block
++    }
++    const Id push_constant_struct{TypeStruct(U32[1])};
++    Decorate(push_constant_struct, spv::Decoration::Block);
++    Name(push_constant_struct, "MeshDrawBase");
++    MemberDecorate(push_constant_struct, 0, spv::Decoration::Offset, MeshDrawBaseOffset());
++    MemberName(push_constant_struct, 0, "mesh_draw_base");
++    mesh_draw_base_member_index = 0;
++    const Id pointer_type{TypePointer(spv::StorageClass::PushConstant, push_constant_struct)};
++    mesh_draw_base_push_constant = AddGlobalVariable(pointer_type, spv::StorageClass::PushConstant);
++    Name(mesh_draw_base_push_constant, "mesh_draw_base_push_constants");
++    if (profile.supported_spirv >= 0x00010400) {
++        interfaces.push_back(mesh_draw_base_push_constant);
++    }
++}
++
+ void EmitContext::DefineRenderArea(const Info& info) {
+     if (!info.uses_render_area) {
+         return;
+diff --git a/src/shader_recompiler/backend/spirv/spirv_emit_context.h b/src/shader_recompiler/backend/spirv/spirv_emit_context.h
+index 442573b31a..d47ea953db 100644
+--- a/src/shader_recompiler/backend/spirv/spirv_emit_context.h
++++ b/src/shader_recompiler/backend/spirv/spirv_emit_context.h
+@@ -164,6 +164,18 @@ struct GenericElementInfo {
+     u32 num_components{};
+ };
+ 
++enum GlobalAtomicOp : size_t {
++    GLOBAL_ATOMIC_IADD,
++    GLOBAL_ATOMIC_SMIN,
++    GLOBAL_ATOMIC_UMIN,
++    GLOBAL_ATOMIC_SMAX,
++    GLOBAL_ATOMIC_UMAX,
++    GLOBAL_ATOMIC_AND,
++    GLOBAL_ATOMIC_OR,
++    GLOBAL_ATOMIC_XOR,
++    GLOBAL_ATOMIC_EXCHANGE,
++};
++
+ class EmitContext final : public Sirit::Module {
+ public:
+     explicit EmitContext(const Profile& profile, const RuntimeInfo& runtime_info,
+@@ -323,6 +335,9 @@ public:
+     u32 texture_rescaling_index{};
+     u32 image_rescaling_index{};
+ 
++    Id mesh_draw_base_push_constant{};
++    u32 mesh_draw_base_member_index{};
++
+     Id render_area_push_constant{};
+     u32 render_are_member_index{};
+ 
+@@ -354,6 +369,8 @@ public:
+ 
+     Id write_storage_cas_loop_func{};
+ 
++    // Indexed by GLOBAL_ATOMIC_*: helpers for 32-bit atomics on untracked global memory.
++    std::array<Id, 9> global_atomic_funcs_u32{};
+     Id load_global_func_u32{};
+     Id load_global_func_u32x2{};
+     Id load_global_func_u32x4{};
+@@ -437,11 +454,14 @@ private:
+     void DefineImages(const Info& info, u32& binding, u32& scaling_index);
+     void DefineAttributeMemAccess(const Info& info);
+     void DefineWriteStorageCasLoopFunction(const Info& info);
+-    void DefineGlobalMemoryFunctions(const Info& info);
++    void DefineGlobalMemoryFunctions(const IR::Program& program);
+     void DefineRescalingInput(const Info& info);
+     void DefineRescalingInputPushConstant();
+     void DefineRescalingInputUniformConstant();
+     void DefineRenderArea(const Info& info);
++    void DefineMeshDrawBase();
++    [[nodiscard]] bool UsesMeshDrawBase() const;
++    [[nodiscard]] u32 MeshDrawBaseOffset() const;
+ 
+     void DefineInputs(const IR::Program& program);
+     void DefineOutputs(const IR::Program& program);
+diff --git a/src/video_core/renderer_vulkan/pipeline_helper.h b/src/video_core/renderer_vulkan/pipeline_helper.h
+index 07de25f18f..b0d1f55eb7 100644
+--- a/src/video_core/renderer_vulkan/pipeline_helper.h
++++ b/src/video_core/renderer_vulkan/pipeline_helper.h
+@@ -247,8 +247,14 @@ public:
+         using Shader::Backend::SPIRV::RescalingLayout;
+         const u32 size_offset = is_compute ? sizeof(RescalingLayout::down_factor) : 0u;
+         const VkPushConstantRange range{
++            // Task and mesh stages aren't in ALL_GRAPHICS: without them a mesh pipeline's
++            // shaders read undefined rescaling words (after Djihads80/Eglantine #472).
+             .stageFlags = static_cast<VkShaderStageFlags>(
+-                is_compute ? VK_SHADER_STAGE_COMPUTE_BIT : VK_SHADER_STAGE_ALL_GRAPHICS),
++                is_compute ? VK_SHADER_STAGE_COMPUTE_BIT
++                           : (uses_mesh ? VK_SHADER_STAGE_ALL_GRAPHICS |
++                                              VK_SHADER_STAGE_TASK_BIT_EXT |
++                                              VK_SHADER_STAGE_MESH_BIT_EXT
++                                        : VK_SHADER_STAGE_ALL_GRAPHICS)),
+             .offset = 0,
+             .size = static_cast<u32>(sizeof(RescalingLayout)) - size_offset +
+                     static_cast<u32>(sizeof(RenderAreaLayout)),
+@@ -266,6 +272,7 @@ public:
+ 
+     void Add(const Shader::Info& info, VkShaderStageFlags stage) {
+         is_compute |= (stage & VK_SHADER_STAGE_COMPUTE_BIT) != 0;
++        uses_mesh |= (stage & (VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT)) != 0;
+ 
+         Add(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, stage, info.constant_buffer_descriptors);
+         Add(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, stage, info.storage_buffers_descriptors);
+@@ -303,6 +310,7 @@ private:
+ 
+     const Device* device{};
+     bool is_compute{};
++    bool uses_mesh{};
+     boost::container::small_vector<VkDescriptorSetLayoutBinding, 32> bindings;
+     boost::container::small_vector<VkDescriptorUpdateTemplateEntry, 32> entries;
+     u32 binding{};
+diff --git a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+index 0d761f7715..bd3abc4c68 100644
+--- a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
++++ b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+@@ -47,6 +47,8 @@ namespace {
+ using boost::container::small_vector;
+ using boost::container::static_vector;
+ using Shader::ImageBufferDescriptor;
++using Shader::Backend::SPIRV::MESH_DRAW_BASE_OFFSET;
++using Shader::Backend::SPIRV::MeshFirstEnabled;
+ using Shader::Backend::SPIRV::RENDERAREA_LAYOUT_OFFSET;
+ using Shader::Backend::SPIRV::RESCALING_LAYOUT_DOWN_FACTOR_OFFSET;
+ using Shader::Backend::SPIRV::RESCALING_LAYOUT_WORDS_OFFSET;
+@@ -708,6 +710,13 @@ bool GraphicsPipeline::ConfigureDraw(const RescalingPushConstant& rescaling,
+     const bool is_rescaling{texture_cache.IsRescaling()};
+     const bool update_rescaling{scheduler.UpdateRescaling(is_rescaling)};
+     const bool bind_pipeline{scheduler.UpdateGraphicsPipeline(this)};
++    const bool mesh_pipeline{IsMeshPipeline()};
++    const bool push_mesh_draw_base{mesh_pipeline && MeshFirstEnabled()};
++    std::array<u32, 2> mesh_draw_base{};
++    if (push_mesh_draw_base) {
++        mesh_draw_base[stage_infos[0].is_task ? 0 : 1] =
++            maxwell3d->draw_manager.draw_state.vertex_buffer.first;
++    }
+     const bool bind_descriptor_buffer{
+         descriptor_set_layout && uses_descriptor_buffer &&
+         scheduler.UpdateDescriptorBufferChunk(descriptor_buffer_chunk)};
+@@ -734,7 +743,8 @@ bool GraphicsPipeline::ConfigureDraw(const RescalingPushConstant& rescaling,
+                       descriptor_buffer_offset, descriptor_buffer_chunk, bind_descriptor_buffer,
+                       rescaling_data = rescaling.Data(), is_rescaling, update_rescaling,
+                       uses_render_area = render_area.uses_render_area,
+-                      render_area_data = render_area.words](vk::CommandBuffer cmdbuf) {
++                      render_area_data = render_area.words, mesh_pipeline, push_mesh_draw_base,
++                      mesh_draw_base](vk::CommandBuffer cmdbuf) {
+         if (bind_descriptor_buffer) {
+             const VkDescriptorBufferBindingInfoEXT binding_info{
+                 descriptor_buffer_ring.BindingInfo(descriptor_buffer_chunk)};
+@@ -746,20 +756,27 @@ bool GraphicsPipeline::ConfigureDraw(const RescalingPushConstant& rescaling,
+             }
+             cmdbuf.BindPipeline(VK_PIPELINE_BIND_POINT_GRAPHICS, *pipeline);
+         }
+-        cmdbuf.PushConstants(*pipeline_layout, VK_SHADER_STAGE_ALL_GRAPHICS,
+-                             RESCALING_LAYOUT_WORDS_OFFSET, sizeof(rescaling_data),
+-                             rescaling_data.data());
++        const VkShaderStageFlags push_stages{
++            mesh_pipeline ? VkShaderStageFlags{VK_SHADER_STAGE_ALL_GRAPHICS |
++                                               VK_SHADER_STAGE_TASK_BIT_EXT |
++                                               VK_SHADER_STAGE_MESH_BIT_EXT}
++                          : VkShaderStageFlags{VK_SHADER_STAGE_ALL_GRAPHICS}};
++        cmdbuf.PushConstants(*pipeline_layout, push_stages, RESCALING_LAYOUT_WORDS_OFFSET,
++                             sizeof(rescaling_data), rescaling_data.data());
+         if (update_rescaling) {
+             const f32 config_down_factor{Settings::values.resolution_info.down_factor};
+             const f32 scale_down_factor{is_rescaling ? config_down_factor : 1.0f};
+-            cmdbuf.PushConstants(*pipeline_layout, VK_SHADER_STAGE_ALL_GRAPHICS,
++            cmdbuf.PushConstants(*pipeline_layout, push_stages,
+                                  RESCALING_LAYOUT_DOWN_FACTOR_OFFSET, sizeof(scale_down_factor),
+                                  &scale_down_factor);
+         }
+         if (uses_render_area) {
+-            cmdbuf.PushConstants(*pipeline_layout, VK_SHADER_STAGE_ALL_GRAPHICS,
+-                                 RENDERAREA_LAYOUT_OFFSET, sizeof(render_area_data),
+-                                 &render_area_data);
++            cmdbuf.PushConstants(*pipeline_layout, push_stages, RENDERAREA_LAYOUT_OFFSET,
++                                 sizeof(render_area_data), &render_area_data);
++        }
++        if (push_mesh_draw_base) {
++            cmdbuf.PushConstants(*pipeline_layout, push_stages, MESH_DRAW_BASE_OFFSET,
++                                 sizeof(mesh_draw_base), mesh_draw_base.data());
+         }
+         if (!descriptor_set_layout) {
+             return;
+-- 
+2.51.0.windows.1
+

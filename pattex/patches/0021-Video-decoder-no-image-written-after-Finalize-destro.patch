@@ -1,0 +1,155 @@
+From 538cfeacf1e57875c374ade2ba73ec0559bf3afe Mon Sep 17 00:00:00 2001
+From: pattex67 <33281022+pattex67@users.noreply.github.com>
+Date: Thu, 5 Nov 2026 16:08:43 +0100
+Subject: [PATCH] Video decoder: no image written after Finalize; destroying a
+ decoder image waits for the GPU thread
+
+- Finalize (115) drops queued input, decoded frames and free images, and waits for a write in
+  progress; Stop/Flush wait for one too. Yoshi gives the movie's image memory back to its heap right
+  after, with frames decoded up to 17 s ahead still queued.
+- Destroying a GPU-mapped decoder image drops the caches' state for it (UnmapMemory) and waits (up
+  to 1 s) until the GPU thread has done it and the queued unmap, before replying.
+
+Neither stops Yoshi's 2162-0001 abort after the Bowser Jr. movie (2 and 3 crashes in 3 runs).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/core/hle/service/nx2_gsv.h | 49 ++++++++++++++++++++++++++++++----
+ 1 file changed, 44 insertions(+), 5 deletions(-)
+
+diff --git a/src/core/hle/service/nx2_gsv.h b/src/core/hle/service/nx2_gsv.h
+index c9b82ce4b8..410abbfd5a 100644
+--- a/src/core/hle/service/nx2_gsv.h
++++ b/src/core/hle/service/nx2_gsv.h
+@@ -7,6 +7,7 @@
+ #include <array>
+ #include <thread>
+ #include <chrono>
++#include <future>
+ #include <condition_variable>
+ #include <cstring>
+ #include <set>
+@@ -2740,6 +2741,7 @@ private:
+                  w[6], w[7]);
+         {
+             std::scoped_lock lk{m_mutex};
++            m_finalized = false;
+             m_codec = std::move(codec);
+             m_width = w[5];
+             m_height = w[6];
+@@ -2872,7 +2874,8 @@ private:
+     void Flush(HLERequestContext& ctx) {
+         Log(ctx, ctx.GetCommand() == 8 ? "flush" : "stop");
+         {
+-            std::scoped_lock lk{m_mutex};
++            std::unique_lock lk{m_mutex};
++            WaitForImageWrite(lk);
+             m_inputs.clear();
+             m_flush = true;
+             m_stream_ended = false;
+@@ -2903,7 +2906,16 @@ private:
+     void Finalize(HLERequestContext& ctx) {
+         Log(ctx, "finalize");
+         {
+-            std::scoped_lock lk{m_mutex};
++            // The client frees the images' memory once this returns (Yoshi gives it to Unreal's
++            // heap right after the Bowser Jr. movie, with frames decoded up to 17 s ahead still
++            // queued): no image is written after it, and a write in progress ends first. A write
++            // after the free overwrote heap blocks and the game aborted with 2162-0001.
++            std::unique_lock lk{m_mutex};
++            m_finalized = true;
++            m_inputs.clear();
++            m_decoded.clear();
++            m_free.clear();
++            WaitForImageWrite(lk);
+             CompleteHandedFences();
+         }
+         m_ready->room.store(false, std::memory_order_relaxed);
+@@ -2914,6 +2926,11 @@ private:
+         TipcReplyWords(ctx, {});
+     }
+ 
++    // Waits until the decode thread is not writing an image into guest memory (m_mutex held).
++    void WaitForImageWrite(std::unique_lock<std::mutex>& lk) {
++        m_cv.wait(lk, [&] { return !m_writing_image; });
++    }
++
+     // Advances the decoder's syncpoint to the last value handed out (m_mutex held).
+     void CompleteHandedFences() {
+         if (m_syncpoint == NoSyncpoint) {
+@@ -2961,7 +2978,7 @@ private:
+         std::unique_lock lk{m_mutex};
+         while (true) {
+             m_cv.wait(lk, [&] {
+-                return m_quit || m_flush || (!m_decoded.empty() && !m_free.empty()) ||
++                return m_quit || m_flush || (!m_finalized && !m_decoded.empty() && !m_free.empty()) ||
+                        (!m_inputs.empty() && m_decoded.size() < MaxDecodedAhead);
+             });
+             if (m_quit) {
+@@ -2977,7 +2994,7 @@ private:
+                 }
+                 continue;
+             }
+-            if (!m_decoded.empty() && !m_free.empty()) {
++            if (!m_finalized && !m_decoded.empty() && !m_free.empty()) {
+                 Decoded frame = std::move(m_decoded.front());
+                 m_decoded.pop_front();
+                 const u32 image = m_free.front();
+@@ -2987,12 +3004,15 @@ private:
+                     fence = it->second;
+                     m_release_fences.erase(it);
+                 }
++                m_writing_image = true;
+                 lk.unlock();
+                 if (fence) {
+                     WaitForRelease(*fence);
+                 }
+                 const auto [width, height] = WriteImage(decoder.get(), image, frame, bytes);
+                 lk.lock();
++                m_writing_image = false;
++                m_cv.notify_all();
+                 // Even an image written during a flush counts: the client waits for its value.
+                 m_outputs.push_back({image, width, height, frame.pts, frame.end});
+                 if (frame.end) {
+@@ -3182,6 +3202,8 @@ private:
+     bool m_stream_ended{};             ///< End-of-stream frame handed out, nothing submitted since
+     bool m_flush{};
+     bool m_quit{};
++    bool m_finalized{};     ///< Finalize: no image is written until the next Configure
++    bool m_writing_image{}; ///< The decode thread is writing an image (m_mutex released)
+     std::thread m_worker;
+ };
+ 
+@@ -3893,11 +3915,28 @@ private:
+         return std::pair{memory->second.address + image.offset, image.size};
+     }
+ 
+-    static void DropDecoderMapping(const std::optional<std::pair<u64, u64>>& range) {
++    void DropDecoderMapping(const std::optional<std::pair<u64, u64>>& range) {
+         if (range) {
+             auto& registry = Nvidia::Devices::Nx2GpuMemoryRegistry::Get();
++            const auto device = registry.DeviceAddressOf(range->first);
+             registry.Unmap(range->first, range->second);
+             registry.ReleaseBacking(range->first, range->second);
++            // The client gives this memory back to its heap as soon as we reply (Yoshi: the
++            // Bowser Jr. movie's frames, then Unreal blocks there, and a 2162-0001 abort a few
++            // seconds later). Drop what the caches hold for it and wait until the GPU thread has
++            // done that and the unmap queued above, so nothing of the frames reaches the heap.
++            auto done = std::make_shared<std::promise<void>>();
++            auto finished = done->get_future();
++            system.GPU().RunInOrder([&gpu = system.GPU(), device, size = range->second, done] {
++                if (device) {
++                    gpu.Renderer().ReadRasterizer()->UnmapMemory(*device, size);
++                }
++                done->set_value();
++            });
++            if (finished.wait_for(std::chrono::seconds{1}) != std::future_status::ready) {
++                LOG_WARNING(Service, "nx2:gsv decoder image unmap at {:#x} still queued after 1 s",
++                            range->first);
++            }
+         }
+     }
+ 
+-- 
+2.51.0.windows.1
+

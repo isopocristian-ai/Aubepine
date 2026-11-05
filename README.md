@@ -45,6 +45,11 @@ on games that did not run elsewhere.</h4>
   crashes or hangs on a white page a few seconds after the Bowser Jr. movie** (its heap gets
   overwritten, cause still being looked for); the first mission was black on the last run that got
   there.
+- **The Legend of Zelda: Ocarina of Time** boots and plays on AMD: new shader forms, matrix-multiply
+  programs kept small enough for the AMD compiler, its GPU memory backed whole, the forest shadow map
+  given memory (shadows and lit rocks), faster CPU writes next to GPU data. **Outdoor light is still
+  too bright and foggy** (most of the forest's vegetation is culled on the GPU through pointer tables
+  not followed yet) and rare single-frame light flashes remain.
 - **Kirby Air Riders**: menus, races and results render, and races now show their scenery (Selevet's
   white-frame fixes, Lichii's title-crash and shader-stall fixes, many new shader forms); no rejected
   shaders in a short run. The first race stutters while its shaders build.
@@ -52,8 +57,9 @@ on games that did not run elsewhere.</h4>
   and the tour movie fixed on AMD GPUs.
 - GPU memory reused at the same addresses is mapped again when its pages changed (from
   [AMDEGL](https://github.com/Purebuilt/AMDEGL); fixes stale reads behind Mario Kart World freezes).
-- Up to date with Eglantine nx2 d9558f05a (2026-11-04): DK Bananza frame wait, Hyrule Warriors and
-  Pokopia shader forms, buffer cache fixes, FSR 3.1 in place of a game's DLSS.
+- Up to date with Eglantine nx2 e736dfde9e (2026-11-05): Ocarina of Time boot fix, DK Bananza frame
+  wait, Hyrule Warriors and Pokopia shader forms, buffer cache fixes, FSR 3.1 in place of a game's DLSS;
+  and PokeDinner's Switch 2 mouse (Joy-Con 2 mouse mode).
 - Metroid Prime 4 loose RomFS dumps load, and several other fixes listed in
   [pattex/README.md](pattex/README.md).
 
@@ -64,6 +70,7 @@ Tested on Windows 11, Ryzen 7 9800X3D and Radeon RX 9070 XT, in short sessions.
 | Game | State |
 |---|---|
 | Star Fox | Title, intro cutscenes, training mission, sound; no rejected shaders (needs the window patch). |
+| The Legend of Zelda: Ocarina of Time | Docked, from a save: Kokiri Forest plays at ~40-55 FPS (60 indoors) with shadows, 4-5 minute runs without a crash. **Outdoor light still too bright and foggy**, rare single-frame flashes. |
 | Yoshi and the Mysterious Book | Docked: the game starts, title, intro and Bowser Jr. movie play. **A few seconds after the Bowser Jr. movie it usually aborts (2162-0001) or hangs on a white page**: about 4 runs in 5 in our tests, builds before the latest Eglantine merge included. Unreal's heap gets overwritten right after the game frees the movie's video memory; the cause is still being looked for. When it gets past that point, the first mission was still black on the last run; its rejected shaders are translated since (patches 0017-0018). |
 | Mario Kart World | Title, tour movie, races at ~40-45 FPS; no rejected shaders. One short run in two aborted during the tour movie since the latest Eglantine merge. |
 | Donkey Kong Bananza | Saves load and play; no rejected shaders; ~28 FPS since Eglantine's frame wait (`EDEN_NX2_FRAMES_AHEAD=1` for the old behaviour). |
@@ -112,7 +119,10 @@ quelques secondes après la vidéo de Bébé Bowser** dans environ 4 essais sur 
 juste après que le jeu libère la mémoire de la vidéo ; cause encore recherchée), et la première mission
 était noire au dernier essai qui y est arrivé. Les courses de **Kirby** affichent maintenant leurs
 décors (la première rame pendant la compilation des shaders), et Mario Kart World, DK Bananza et
-Metroid Prime 4 profitent des correctifs regroupés. À jour avec Eglantine nx2 d9558f05a (4 novembre). Testé sur Windows 11 avec une Radeon RX 9070 XT. Une version
+Metroid Prime 4 profitent des correctifs regroupés. **Zelda: Ocarina of Time** démarre et se joue sur AMD
+(ombres et rochers éclairés dans la forêt Kokiri, 40-55 FPS) ; la lumière extérieure reste **trop forte
+et brumeuse** (une grande partie de la végétation n'est pas encore dessinée) et de rares flashs d'une
+image subsistent. À jour avec Eglantine nx2 e736dfde9e (5 novembre). Testé sur Windows 11 avec une Radeon RX 9070 XT. Une version
 compilée pour Windows est dans les [Releases](https://github.com/pattex67/Aubepine/releases) ; pour
 compiler soi-même, suivre [docs/Build.md](docs/Build.md) sur la branche `pattex`. Ne jouez qu'à des jeux que vous
 possédez et avez extraits vous-même : aucun fichier de jeu, clé ou firmware n'est fourni.

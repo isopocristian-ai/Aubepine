@@ -1,0 +1,31 @@
+From 3c621ee53f25ee1c46d4c6773cb7eda9b90b65c7 Mon Sep 17 00:00:00 2001
+From: pattex67 <33281022+pattex67@users.noreply.github.com>
+Date: Thu, 5 Nov 2026 16:09:06 +0100
+Subject: [PATCH] Ampere lowering: shadow ISBEWR's data register
+
+The shadow check read bits 32-39 only for register forms and a few exceptions, so a mesh program
+storing an attribute from R216 and up wrote the lowering's uniform mirror instead. Ocarina of
+Time's Link's-house door got a NaN attribute that bloom turned into a white glow. After
+zortos293/Lichii 3c8dc569f4 (#100).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/shader_recompiler/frontend/ampere/lower_to_maxwell.h | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h b/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
+index fac12e03d9..4b9ade8f13 100644
+--- a/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
++++ b/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
+@@ -278,7 +278,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+         bool requires_shadow = false;
+         for (u32 bit : {16U, 24U, 32U, 64U}) {
+             if (bit == 32 && insn.Bits(9, 3) != 1 && opcode != 0xb60 && opcode != 0xb66 && opcode != 0xf66 &&
+-                opcode != 0x988 && opcode != 0x986) continue;
++                opcode != 0x988 && opcode != 0x986 && opcode != 0x927) continue; // 0x927: ISBEWR data (Lichii 3c8dc569f4)
+             const u32 reg = insn.Bits(bit, 8);
+             if (reg >= shadow_boundary && reg < 255) requires_shadow = true;
+         }
+-- 
+2.51.0.windows.1
+

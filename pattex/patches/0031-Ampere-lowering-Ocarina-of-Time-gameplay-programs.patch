@@ -1,0 +1,221 @@
+From be79ce4ede2be5471be1fed1a2d3752cc4fdf3f7 Mon Sep 17 00:00:00 2001
+From: pattex67 <33281022+pattex67@users.noreply.github.com>
+Date: Thu, 5 Nov 2026 16:09:06 +0100
+Subject: [PATCH] Ampere lowering: Ocarina of Time gameplay programs
+
+Own implementations, after zortos293/Lichii c9ebb5c3af (#87) and Pipe530/Lichii 2c1ad1b12a:
+- SHF.R.U64 with a register shift and USHF.R.U64 with an immediate: the low word of hi:lo >> s
+  from clamped Maxwell shifts.
+- USHF.L.U32.HI URd, URZ, imm, URb (0x499), with a UPn guard swapped in like 0x899.
+- TLD4 with depth compare (bit 78, bound 2D without an offset); TLD4.PTP with an F16 result
+  (bit 79) and destinations of any alignment.
+- LEA.HI with a negated Rb (not with .X).
+- Shadow copies for ALD, AST, ISBERD (0x927), F2IP, 0x923 and SGXT using R216 and up.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../frontend/ampere/lower_to_maxwell.h        | 94 +++++++++++++++----
+ 1 file changed, 77 insertions(+), 17 deletions(-)
+
+diff --git a/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h b/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
+index 4f3ee9c715..fac12e03d9 100644
+--- a/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
++++ b/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
+@@ -86,7 +86,13 @@ inline RegisterPressure PrepareRegisterPressure(const Instruction& input, u32 re
+     case 0x304: case 0x305: case 0x306: case 0x307: case 0x245: operand(16); operand(32); break;
+     case 0x845: case 0xa45: case 0xc45: operand(16); break; // I2FP immediate, cbuf, UR
+     case 0x919: operand(16); break;
+-    case 0x202: operand(16); operand(32); break; // MOV
++    // ALD Rd.. (count at bits 74-75), [Ra], Rb; AST [Ra], Rb..; ISBERD [Ra] (Ocarina of Time).
++    case 0x321: operand(16, input.Bits(74, 2) + 1); operand(24); operand(32); break;
++    case 0x322: operand(24); operand(32, input.Bits(74, 2) + 1); break;
++    case 0x927: operand(24); operand(32); break;
++    case 0x202: case 0x243: operand(16); operand(32); break; // MOV, F2IP
++    case 0x923: operand(16); operand(24); break; // as in zortos293/Lichii's register_pressure.h
++    case 0x81a: operand(16); operand(24); break; // SGXT Rd, Ra, n (Ocarina of Time)
+     case 0x433: case 0x633: operand(16); operand(24); break;
+     case 0x233: operand(16); operand(24); operand(32); break;
+     case 0x217: operand(16); operand(24); operand(32); break; // IMNMX
+@@ -210,7 +216,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+     });
+     for (const auto& instruction : code) {
+         const u32 op = instruction.Bits(0, 12);
+-        uses_uniform_bank |= op == 0x3c4 || op == 0x2bd || op == 0x896 || op == 0xf60 || op == 0xc11 || op == 0xd08 || op == 0xc0c || op == 0x986 || op == 0x9a8 || op == 0xc12 || op == 0xc17 || op == 0xe24 || op == 0xc24 || op == 0xd00 || op == 0xd09 || op == 0x9c3 || op == 0xc45 || op == 0x2a4 || op == 0x4a4 || op == 0xc07 || op == 0x891 || op == 0x890 || op == 0x290 || op == 0x28c || op == 0x88c || op == 0x287 || op == 0x887 || op == 0x958 || op == 0xab9 || op == 0xabb || op == 0x899 || op == 0xc20 || op == 0xe21 || op == 0xe23 || op == 0xc02 ||
++        uses_uniform_bank |= op == 0x3c4 || op == 0x2bd || op == 0x896 || op == 0xf60 || op == 0xc11 || op == 0xd08 || op == 0xc0c || op == 0x986 || op == 0x9a8 || op == 0xc12 || op == 0xc17 || op == 0xe24 || op == 0xc24 || op == 0xd00 || op == 0xd09 || op == 0x9c3 || op == 0xc45 || op == 0x2a4 || op == 0x4a4 || op == 0xc07 || op == 0x499 || op == 0x891 || op == 0x890 || op == 0x290 || op == 0x28c || op == 0x88c || op == 0x287 || op == 0x887 || op == 0x958 || op == 0xab9 || op == 0xabb || op == 0x899 || op == 0xc20 || op == 0xe21 || op == 0xe23 || op == 0xc02 ||
+                              op == 0x886 || op == 0x3c2 || op == 0xc82 || op == 0x882 || op == 0x292 || op == 0x092 || op == 0x892 || op == 0x291 || op == 0x981 || op == 0xc13 || op == 0xc10 || op == 0xc23 || op == 0x526 || op == 0x2be || op == 0x8a4 || op == 0xd05 || (op == 0x984 && instruction.Bits(91, 1)) || op == 0x89c || op == 0x883 || op == 0x2a5 || op == 0xd06 || op == 0xf63 || op == 0xf66 || op == 0xf6c || op == 0xf69 || op == 0xc0b || op == 0x8a5 || op == 0x299 || op == 0xc09 || (op == 0x81c && instruction.Bits(67, 1)) || op == 0xc0a || (op == 0x988 && instruction.Bits(91, 1)) ||
+                              (op == 0x83b && instruction.Bits(91, 1));
+     }
+@@ -354,7 +360,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+         }
+         // 0x899 (USHF) lowers to one SHR/SHL, so a uniform guard is swapped in like these.
+         const bool uniform_predication = opcode == 0xabb || opcode == 0xab9 || opcode == 0xc82 || opcode == 0x882 ||
+-                                         opcode == 0x899;
++                                         opcode == 0x899 || opcode == 0x499;
+         const u32 native_predicate = insn.Bits(12, 4);
+         const bool guarded_uniform = (uniform_predication || uniform_guard) && native_predicate != 7;
+         // A uniform guard UPn lives in R239 bit 6-n and is swapped into P(6-n) for the op.
+@@ -511,6 +517,24 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+             emit(base(0x5c18000000000000ULL) | (u64{251} << 8) |
+                  (u64{250} << 20) | (u64{16} << 39));
+         };
++        // The low word of high:low >> shift (0 to 64, in a register), with Maxwell's clamped
++        // shifts: (low >> s) | (high << (32 - s)) | (high >> (s - 32)); a shift outside 0-31
++        // gives 0. Uses R250 and R251. For SHF.R.U64 and USHF.R.U64 (Ocarina of Time), after
++        // zortos293/Lichii c9ebb5c3af (#87).
++        const auto right_shift_u64_low = [&](u32 target, u32 low, u32 high, u32 shift) {
++            mov_imm(250, 32);
++            emit(0x5c10000000000000ULL | predicate | 251 | (u64{250} << 8) | (u64{shift} << 20) |
++                 (u64{1} << 48));                                                   // 32 - s
++            emit(0x5c28000000000000ULL | predicate | 250 | (u64{low} << 8) | (u64{shift} << 20));
++            emit(0x5c48000000000000ULL | predicate | 251 | (u64{high} << 8) | (u64{251} << 20));
++            emit(0x5c40000000000000ULL | predicate | 250 | (u64{250} << 8) | (u64{251} << 20) |
++                 (u64{1} << 41) | (u64{7} << 48));                                  // OR
++            emit(0x1c00000000000000ULL | predicate | 251 | (u64{shift} << 8) |
++                 (u64{0xffffffe0U} << 20));                                         // s - 32
++            emit(0x5c28000000000000ULL | predicate | 251 | (u64{high} << 8) | (u64{251} << 20));
++            emit(0x5c40000000000000ULL | predicate | target | (u64{250} << 8) | (u64{251} << 20) |
++                 (u64{1} << 41) | (u64{7} << 48));
++        };
+         switch (opcode) {
+         case 0x304: { // F2F.F16.F32, scalar round-to-nearest conversion.
+             if (insn.words[2] != 0x00200800 || insn.Bits(24, 8) ||
+@@ -1081,12 +1105,30 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+             }
+             break;
+         }
++        case 0x499: { // USHF.L.U32.HI URd, URZ, imm, URb (Ocarina of Time): imm << URb; bit 75 wraps.
++            // After zortos293/Lichii.
++            const u32 target = uniform_register(static_cast<u32>(dest));
++            const u32 shift = uniform_register(insn.Bits(64, 8));
++            if (insn.Bits(24, 8) != 63 || (insn.words[2] & ~0x8ffU) != 0x08010600 ||
++                (insn.words[3] & 0xc00001ffU) || target == ~0U || target == 255 || shift == ~0U)
++                return fail(index, "native uniform immediate high-word shift mode");
++            mov_imm(250, insn.words[1]);
++            emit(0x5c48000000000000ULL | predicate | target | (u64{250} << 8) | (u64{shift} << 20) |
++                 (u64{insn.Bits(75, 1)} << 39));
++            break;
++        }
+         case 0x899: { // USHF.L.U32; accept a zero word outside the selected half.
+             const u32 dst = insn.Bits(16, 8), low = insn.Bits(24, 8), high = insn.Bits(64, 8);
+             const u32 dst_reg = uniform_register(dst), low_reg = uniform_register(low);
+             const u32 high_reg = uniform_register(high);
+             const bool dst_ok = dst != 63 && dst_reg != ~0U;
+             const bool low_ok = low != 63 && low_reg != ~0U, high_ok = high != 63 && high_reg != ~0U;
++            // USHF.R.U64 URd, URa, n, URb (Ocarina of Time): the low word of URb:URa >> n.
++            if (dst_ok && low_ok && high_ok && insn.words[2] == (0x08001200U | high) && insn.words[1] <= 64) {
++                mov_imm(252, insn.words[1]);
++                right_shift_u64_low(dst_reg, low_reg, high_reg, 252);
++                break;
++            }
+             // A UPn guard (Hyrule Warriors: @UP1 USHF.R.U32.HI) is swapped into the predicate above.
+             if (insn.words[2] == (0x08011400U | high) && low == 63 && high_ok &&
+                 dst_ok && insn.words[1] <= 32) {
+@@ -1486,6 +1528,12 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+             const bool shift_operand = constant ? valid_cbuf() && !insn.Bits(62, 2) : insn.words[1] <= 255;
+             const auto load_shift = [&] { if (constant) materialize(2, 0, 251, false, false); };
+             const bool right = insn.Bits(76, 1) != 0, high_result = insn.Bits(80, 1) != 0;
++            // SHF.R.U64 Rd, Ra, Rs, Rb with a register shift (Ocarina of Time): the low word of
++            // Rb:Ra >> Rs.
++            if (opcode == 0x219 && shift_operand && shift != ~0U && (insn.words[2] & ~0xffU) == 0x00001200U) {
++                right_shift_u64_low(static_cast<u32>(dest), low, high, shift);
++                break;
++            }
+             // SHF.R.U32 of the low word with a zero high word: a plain logical right shift.
+             if (right && !high_result && high == 255 && insn.Bits(73, 2) == 3 && shift != ~0U &&
+                 shift_operand &&
+@@ -2360,12 +2408,13 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+             // 2D gather with per-texel offsets (bits 76-77 = 2, .PTP): Rb:Rb+1 hold the four
+             // offset pairs, which Maxwell TLD4 takes the same way (offset type 2, bits 54-55).
+             if (!bindless && insn.Bits(76, 2) == 2 && insn.Bits(61, 3) == 1 && !insn.Bits(59, 1) && insn.Bits(60, 1) &&
+-                mask && !insn.Bits(78, 3) && insn.Bits(81, 3) == 7 && !insn.Bits(89, 1) &&
++                mask && !insn.Bits(78, 1) && !insn.Bits(80, 1) && insn.Bits(81, 3) == 7 && !insn.Bits(89, 1) &&
+                 !insn.Bits(91, 1) && binding < 18 && insn.Bits(40, 14) <= 0x1fff &&
+-                (second_dest != 255 ? components >= 3 : components <= 2) && dest + 1 < 246 &&
+-                (components == 1 || !(dest & 1)) &&
+-                (second_dest == 255 ||
+-                 ((components < 4 || !(second_dest & 1)) && second_dest + 1 < 246)) &&
++                // Any destination registers: the components are copied one by one from R250. An F16
++                // result (bit 79, Ocarina of Time) was redirected to R248/R246 and is packed after.
++                (second_dest != 255 ? components >= 3 : components <= 2) &&
++                (dest + 1 < 246 || f16_dest != 255) &&
++                (second_dest == 255 || second_dest + 1 < 246 || f16_second != 255) &&
+                 source_a + 1 < 246 && source_b + 1 < 246) {
+                 if (result.required_texture_buffer != ~0U && result.required_texture_buffer != binding)
+                     return fail(index, "native texture descriptor buffer conflict");
+@@ -2418,7 +2467,13 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+             // Bit 76: a texel offset after the coordinates (x, y in Ra, Ra+1, offsets in Rb, as
+             // for TEX); Maxwell TLD4 takes it as AOFFI (bits 54-55) from Rb.
+             const bool offsets = insn.Bits(76, 1) != 0;
+-            if (insn.Bits(61, 3) != 1 || insn.Bits(77, 3) || insn.Bits(81, 3) != 7 || insn.Bits(59, 1) ||
++            // Bit 78: depth compare (Ocarina of Time), x and y in Ra, Ra+1 and the reference in Rb,
++            // as Maxwell TLD4.DC takes it. Bound 2D without an offset only. After Pipe530/Lichii
++            // 2c1ad1b12a.
++            const bool depth_compare = insn.Bits(78, 1) != 0;
++            if (insn.Bits(61, 3) != 1 || (insn.Bits(77, 3) & ~2U) || insn.Bits(81, 3) != 7 || insn.Bits(59, 1) ||
++                (depth_compare && (bindless || offsets || source_a == 255 || source_a + 1 >= 246 ||
++                                   source_b >= 246 || insn.Bits(91, 1))) ||
+                 (offsets && (source_b == 255 || source_b >= 246 || (source_a != 255 && source_a >= 245))) ||
+                 insn.Bits(89, 1) || mask == 0 ||
+                 (bindless ? (handle >= 246 || insn.Bits(46, 13) || !insn.Bits(91, 1))
+@@ -2428,9 +2483,11 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+             if (!bindless) result.required_texture_buffer = binding;
+             // Two coordinates: x in Ra, y in Rb (the coordinate list splits evenly across them);
+             // with an offset, x and y in Ra, Ra+1 and the offset in Rb.
+-            const u32 y = !offsets ? source_b : source_a == 255 ? 255U : source_a + 1;
++            const u32 y = !offsets && !depth_compare ? source_b : source_a == 255 ? 255U : source_a + 1;
+             emit(0x5c98000000000000ULL | predicate | 250 | (u64{15} << 39) | (u64{source_a} << 20));
+             emit(0x5c98000000000000ULL | predicate | 251 | (u64{15} << 39) | (u64{y} << 20));
++            if (depth_compare)
++                emit(0x5c98000000000000ULL | predicate | 246 | (u64{15} << 39) | (u64{source_b} << 20));
+             // The meta registers: TLD4 takes the offset first, TLD4.B the handle and then the offset
+             // (Yoshi docked gathers with an offset through a uniform handle).
+             if (offsets) {
+@@ -2444,9 +2501,9 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+                      (u64{insn.Bits(87, 2)} << 38) | (u64{insn.Bits(90, 1)} << 49) | (u64{7} << 51));
+             } else {
+             emit(0xc800000000000000ULL | predicate | 250 | (u64{250} << 8) |
+-                 (u64{offsets ? 246U : 255U} << 20) | (u64{2} << 28) | (u64{mask} << 31) |
+-                 (u64{insn.Bits(40, 14)} << 36) | (u64{insn.Bits(90, 1)} << 49) | (u64{7} << 51) |
+-                 (u64{offsets ? 1U : 0U} << 54) | (u64{insn.Bits(87, 2)} << 56));
++                 (u64{offsets || depth_compare ? 246U : 255U} << 20) | (u64{2} << 28) | (u64{mask} << 31) |
++                 (u64{insn.Bits(40, 14)} << 36) | (u64{insn.Bits(90, 1)} << 49) | (u64{depth_compare} << 50) |
++                 (u64{7} << 51) | (u64{offsets ? 1U : 0U} << 54) | (u64{insn.Bits(87, 2)} << 56));
+             }
+             const bool split = second_dest != 255;
+             for (u32 i = 0; i < components; ++i) {
+@@ -3232,9 +3289,12 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+                 // bit 73 sign-extends Ra (Rc is RZ) and .X (bit 74) adds the carry predicate in bits 87-90.
+                 const bool extended = insn.Bits(74, 1) != 0;
+                 const u32 high = insn.Bits(64, 8);
++                // Bit 63 on the register form: Rd = -Rb + high word (Ocarina of Time), not with .X.
++                // After Pipe530/Lichii 2c1ad1b12a.
++                const u64 negate_b = opcode == 0x211 ? insn.Bits(63, 1) : 0;
+                 if (insn.Bits(72, 1) || insn.Bits(81, 3) != 7 ||
+-                    (high != 255 && insn.Bits(73, 1)) || (opcode == 0x211 && insn.Bits(62, 2)) ||
+-                    (opcode == 0xc11 && (insn.words[1] & ~0x3fU)))
++                    (high != 255 && insn.Bits(73, 1)) || (opcode == 0x211 && insn.Bits(62, 1)) ||
++                    (negate_b && extended) || (opcode == 0xc11 && (insn.words[1] & ~0x3fU)))
+                     return fail(index, "native high effective address mode");
+                 u32 b = opcode == 0xc11 ? uniform_register(insn.Bits(32, 8)) : insn.Bits(32, 8);
+                 if (b == ~0U) return fail(index, "native uniform LEA register");
+@@ -3249,7 +3309,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+                     else emit(target | 0x36f8000000000000ULL | (u64{insn.Bits(24, 8)} << 8) | (u64{high} << 39) |
+                               (u64{insn.Bits(75, 5)} << 20));
+                 };
+-                if (b == 255 && !extended) {
++                if (b == 255 && !extended && !negate_b) {
+                     high_word(base(0));
+                 } else {
+                     high_word(predicate | 250);
+@@ -3259,7 +3319,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+                              (u64{insn.Bits(87, 3)} << 39) | (u64{insn.Bits(90, 1)} << 42));
+                         emit(0x5c10000000000000ULL | predicate | 250 | (u64{250} << 8) | (u64{252} << 20));
+                     }
+-                    emit(base(0x5c10000000000000ULL) | (u64{250} << 8) | (u64{b} << 20));
++                    emit(base(0x5c10000000000000ULL) | (u64{250} << 8) | (u64{b} << 20) | (negate_b << 48));
+                 }
+                 break;
+             }
+-- 
+2.51.0.windows.1
+

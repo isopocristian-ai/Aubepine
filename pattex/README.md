@@ -15,7 +15,8 @@ files. `git am` of 0001 to 0015 on PokeDinner 216b5034c reproduces the branch up
 Eglantine merge; the branch then merges Eglantine nx2 d9558f05a (158 commits: DK Bananza frame wait
 and tensor programs, Hyrule Warriors and Pokopia shader forms, buffer cache GPU-write fixes, split
 batching, FSR 3.1 in place of a game's DLSS, mesh-shader fallback; the conflicts are resolved in the
-merge commit, keeping our lowerings where they cover more), and 0016 to 0019 apply on top of it:
+merge commit, keeping our lowerings where they cover more), and 0016 to 0037 apply on top of it with
+the two later merges noted in the table:
 
 | Patch | Content |
 |---|---|
@@ -39,6 +40,25 @@ merge commit, keeping our lowerings where they cover more), and 0016 to 0019 app
 | 0017 | **Kirby Air Riders races**: UIADD3 with three sources and two uniform carry outputs, FRND.F16, and shadow copies for ISETP, IADD3 with an immediate, FMUL, FADD and FFMA that use R216 and up (the registers the lowering keeps for uniform registers). |
 | 0018 | **Kirby races and Yoshi's mission**: shadow copies for every plain ALU form (LOP3, IADD3, IMAD, SHF, PRMT, LEA, FMNMX, SEL, FSEL, ISETP, FSETP), IMNMX, conversions (F2F, F2I, I2F, FRND, I2FP), S2R, MOV, LDG/STG with a descriptor register and STG data in R246 and up; F2I.F16 with any rounding; a program that fails at its first instruction is retried like a partial upload. Kirby's short test run: no rejected shaders left. |
 | 0019 | **Shader stalls** (after Lichii #71, own implementation): a draw or dispatch that waits on a pipeline still queued behind hundreds of builds builds it itself; the structured control flow pass compares statement order from both ends (large Kirby compute shaders translate faster). |
+| 0020 | **Yoshi**: compute code that reads as zeros right after its dispatch is waited for (up to 3 s, once per program); nx2:gpu 102 drops cached GPU writes to the freed memory as an unmap. |
+| 0021 | **Video decoder**: no image is written after Finalize, and destroying a decoder image waits for the GPU thread (Kirby crashed at a VP9 movie without it). |
+| — | **Merge of Eglantine nx2 3081c8e616** (14 commits: native compute storage buffers sized from the mapping, SPIR-V phis of every type, TEX.F16 packing, UISETP bits 68-71, subgroup size) and **PokeDinner master 23f383cab5** (Switch 2 mouse, Joy-Con 2 mouse mode). |
+| 0022-0023 | Revert upstream's native storage buffer sizing (Kirby lost the device and DK fell to 18 FPS with it). |
+| — | **Merge of Eglantine nx2 e736dfde9e**: Ocarina of Time boots (WaitIfEqual64, Eglantine #567). |
+| 0024 | **Ocarina of Time** shader forms (own implementation after [zortos293/Lichii](https://github.com/zortos293/Lichii) #87 and Pipe530): guarded UISETP/USEL, signed REDUX, UFLO/UBREV/UPOPC on any uniform register, RED with a uniform address, UIMAD immediate, uniform SEL, negated F2I, packed F2IP, 64-bit SHF funnel, ISETP.EX with an accumulating predicate; on AMD a conditional EXIT in a discarding program becomes a branch to the last EXIT; NaN-safe saturate. |
+| 0025 | Maxwell SHR: shifts of 32 and more give 0 (logical) or the sign of the source (arithmetic). |
+| 0026 | **AMD Windows**: matrix multiplies are emulated in full only in programs with up to 300 HMMAs (`EDEN_NX2_TENSOR_LIMIT`); Ocarina of Time's large networks made 14 MB of SPIR-V that the AMD driver never finished compiling (freeze 10 s in). |
+| 0027 | Native capture: CALL.REL.NOINC counts as a call, so programs end after their helpers. |
+| 0028 | Vulkan: no inline pipeline build on drivers that compile one pipeline at a time (AMD Windows). |
+| 0029 | **Ocarina of Time**: its GPU-only memory is backed whole (the movie after the menu was green). |
+| 0030 | Fence releases from the puller run on the GPU split's back thread (Ocarina of Time crashed after the intro, after Lichii #70). |
+| 0031 | **Ocarina of Time gameplay** shaders: 64-bit right shifts, TLD4 depth compare and F16 per-tap gathers, ALD/AST/ISBERD and more high-register forms, LEA.HI with a negated source, USHF.L.U32.HI. |
+| 0032 | ISBEWR data register shadowed (Ocarina's door NaN, after Lichii 3c8dc569f4). |
+| 0033 | **Buffer cache**: CPU writes onto GPU-written pages go into the buffer for Switch 2 titles instead of waiting for a download (Ocarina of Time forest 17-20 ms frames, after Lichii #103). |
+| 0034 | **Vulkan allocator**: images up to 1.5 GiB are backed (the limit was 2^28 texels). Ocarina of Time's 24576x24576 shadow map had no memory: no cast shadows, black rocks, thick white ground fog. |
+| 0035 | SPIR-V: 32-bit atomics on untracked global memory through the storage buffer lookup (after Lichii #87); task and mesh stages in the push constant range (after Eglantine #472); `EDEN_NX2_MESH_FIRST=1` experiment (after Lichii d7663205ba). |
+| 0036 | SPIR-V: per-tap gathers with computed offsets run one gather per tap instead of dropping the offsets (Ocarina's upscaler); test switches `EDEN_NX2_GLOBAL_ATOMICS` and `EDEN_NX2_FRAME_BURST`. |
+| 0037 | Global atomics off by default (`EDEN_NX2_GLOBAL_ATOMICS=1` turns them on): with them, Ocarina's forest light passes flash white for single frames. |
 
 Patches 0004 to 0006 are this fork's own work and only touch a few files
 (`lower_to_maxwell.h`, `hardware_opus_decoder_manager.*`, `nx2_audio_device_manager.h`); they should
@@ -63,6 +83,7 @@ the display then reads the right image with the right layout.
 | Kirby Air Riders | Menus, races and results render; the race now shows its scenery but the first race stutters while hundreds of shaders build (the next ones use the disk cache); no rejected shaders in a short run. |
 | Metroid Prime 4 | 60 FPS from loose dumps (RomFS fallback). |
 | Star Fox | Title, intro cutscenes, training mission, sound; no rejected shaders (needs the window patch). |
+| The Legend of Zelda: Ocarina of Time | Docked, from a save: Kokiri Forest plays at ~40-55 FPS (60 indoors), shadows and lit rocks; 4-5 minute runs without a crash. **Outdoor light is still too bright and foggy** (much of the vegetation is culled on the GPU through pointer tables this branch can't follow yet; Lichii is fixing it) and rare single-frame light flashes remain. Three neural-network programs at boot are left to the tensor stand-in. |
 | Yoshi and the Mysterious Book | Docked: the game starts, title, intro and Bowser Jr. movie play. **A few seconds after the Bowser Jr. movie it usually aborts (2162-0001) or hangs on a white page**: about 4 runs in 5 in our tests, builds before the latest Eglantine merge included. Unreal's heap gets overwritten right after the game frees the movie's video memory; the cause is still being looked for. When it gets past that point, the first mission was still black on the last run; its rejected shaders are translated since (patches 0017-0018). |
 
 ## Credits
