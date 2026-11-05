@@ -196,7 +196,10 @@ Id EmitFPSaturate16(EmitContext& ctx, Id value) {
 Id EmitFPSaturate32(EmitContext& ctx, Id value) {
     const Id zero{ctx.Const(f32{0.0f})};
     const Id one{ctx.Const(f32{1.0f})};
-    return Clamp(ctx, ctx.F32[1], value, zero, one);
+    // The hardware saturate turns NaN into zero; a clamp leaves it to the host driver (after
+    // Pipe530/Lichii 2c1ad1b12a, Ocarina of Time on AMD).
+    const Id clamped{Clamp(ctx, ctx.F32[1], value, zero, one)};
+    return ctx.OpSelect(ctx.F32[1], ctx.OpIsNan(ctx.U1, value), zero, clamped);
 }
 
 Id EmitFPSaturate64(EmitContext& ctx, Id value) {
