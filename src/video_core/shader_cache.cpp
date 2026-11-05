@@ -9,6 +9,8 @@
 #include <cstring>
 #include <functional>
 #include <string>
+#include <string_view>
+#include <thread>
 #include <unordered_set>
 #include <fmt/ranges.h>
 #include <array>
@@ -236,6 +238,34 @@ const ShaderInfo* ShaderCache::ComputeShader() {
         }
         return shader;
     } catch (const Shader::Exception& error) {
+        // A program that reads as all zeros at its first dispatch has not reached memory yet.
+        // Dropping that dispatch loses its output: Yoshi then reads a null pointer and hangs on a
+        // white page after the Bowser Jr. movie. Wait here for the code, up to 3 s, once per program.
+        constexpr std::string_view zero_read{"[op 000 00000000 00000000 00000000 00000000]"};
+        if (std::string_view{error.what()}.find(zero_read) != std::string_view::npos &&
+            !CaptureRetries().contains(*cpu_shader_addr)) {
+            const auto start = std::chrono::steady_clock::now();
+            while (std::chrono::steady_clock::now() - start < std::chrono::seconds{3}) {
+                std::this_thread::sleep_for(std::chrono::milliseconds{20});
+                try {
+                    ComputeEnvironment env{*kepler_compute, *gpu_memory, program_base,
+                                           qmd.program_start, {}, native_tensor_full_by_default};
+                    const ShaderInfo* const shader = MakeShaderInfo(env, *cpu_shader_addr);
+                    LOG_INFO(HW_GPU, "Native compute program {:#x} arrived {} ms after its dispatch",
+                             shader_addr,
+                             std::chrono::duration_cast<std::chrono::milliseconds>(
+                                 std::chrono::steady_clock::now() - start)
+                                 .count());
+                    return shader;
+                } catch (const Shader::Exception& retry_error) {
+                    if (std::string_view{retry_error.what()}.find(zero_read) == std::string_view::npos) {
+                        break;
+                    }
+                }
+            }
+            LOG_WARNING(HW_GPU, "Native compute program {:#x} still reads as zeros after 3 s",
+                        shader_addr);
+        }
         // Streamed-in compute programs too: this dispatch is lost, the next ones may run.
         if (!RetryLater(*cpu_shader_addr, error)) {
             RememberRejection(*cpu_shader_addr);

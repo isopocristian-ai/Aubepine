@@ -592,10 +592,12 @@ private:
                 // later CPU read, over the heap data the game puts there: Yoshi's Unreal allocator
                 // found a block header overwritten and aborted (2162-0001). Drop them once the GPU
                 // thread has run the work queued so far, before the slot event lets the game go on.
+                // As an unmap: since Eglantine b13c4c1c0 a plain invalidation first downloads the
+                // GPU-written bytes on the pages it touches, which wrote them over the heap instead.
                 if (const auto device =
                         Nvidia::Devices::Nx2GpuMemoryRegistry::Get().DeviceAddressOf(address)) {
                     system.GPU().RunInOrder([&gpu = system.GPU(), device = *device, size] {
-                        gpu.InvalidateRegion(device, size);
+                        gpu.Renderer().ReadRasterizer()->UnmapMemory(device, size);
                     });
                 }
             }
