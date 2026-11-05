@@ -1059,10 +1059,12 @@ void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
 
     // 32-bit atomics, defined only for the operations the program uses. An address outside every
     // candidate buffer does nothing and returns 0.
-    // EDEN_NX2_GLOBAL_ATOMICS=0 leaves them undefined: programs using them are rejected again.
+    // Off unless EDEN_NX2_GLOBAL_ATOMICS=1: programs using them stay rejected. Ocarina of Time's
+    // forest light passes run with them but flash white for single frames every few frames
+    // (500-frame bursts: 3-5 flashes with them, none without), a worse sight than what they fix.
     static const bool global_atomics = [] {
         const char* value = std::getenv("EDEN_NX2_GLOBAL_ATOMICS");
-        return value == nullptr || value[0] != '0';
+        return value != nullptr && value[0] == '1';
     }();
     const auto define_atomic{[&](GlobalAtomicOp index, auto operation) {
         if (!global_atomics || Sirit::ValidId(global_atomic_funcs_u32[index])) {
