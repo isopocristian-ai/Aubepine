@@ -230,8 +230,37 @@ vk::Image MemoryAllocator::CreateImage(const VkImageCreateInfo &ci, bool dedicat
     // Images this large (title 1's sparse texture arrays reach 4.5G texels, ~23 GB) are never
     // backed: VMA would quietly place them in system memory once VRAM is full. They take the
     // unbacked sparse fallback below.
+    // The limit is in bytes: Ocarina of Time's 24576x24576 D16 shadow map (604M texels, 1.2 GB)
+    // must be backed, or its depth writes go nowhere and the shadows and the fog's sun term read
+    // an image with no memory.
     const u64 texels = u64{ci.extent.width} * ci.extent.height * ci.extent.depth * ci.arrayLayers;
-    const bool huge = texels > (u64{1} << 28);
+    const u64 texel_bytes = [format = ci.format]() -> u64 {
+        switch (format) {
+        case VK_FORMAT_D16_UNORM:
+        case VK_FORMAT_R16_UNORM:
+        case VK_FORMAT_R16_SFLOAT:
+        case VK_FORMAT_R16_UINT:
+        case VK_FORMAT_R8G8_UNORM:
+            return 2;
+        case VK_FORMAT_R8_UNORM:
+        case VK_FORMAT_R8_UINT:
+            return 1;
+        case VK_FORMAT_D32_SFLOAT:
+        case VK_FORMAT_X8_D24_UNORM_PACK32:
+        case VK_FORMAT_D24_UNORM_S8_UINT:
+        case VK_FORMAT_R32_SFLOAT:
+        case VK_FORMAT_R32_UINT:
+        case VK_FORMAT_R8G8B8A8_UNORM:
+        case VK_FORMAT_R8G8B8A8_SRGB:
+        case VK_FORMAT_B8G8R8A8_UNORM:
+        case VK_FORMAT_A2B10G10R10_UNORM_PACK32:
+        case VK_FORMAT_B10G11R11_UFLOAT_PACK32:
+            return 4;
+        default:
+            return 16; // unknown: count it large
+        }
+    }();
+    const bool huge = texels > (u64{1} << 28) && texels * texel_bytes > (u64{3} << 29); // 1.5 GiB
     VkResult result = huge ? VK_ERROR_OUT_OF_DEVICE_MEMORY
                            : vmaCreateImage(allocator, &ci, &alloc_ci, &handle, &allocation, &alloc_info);
     if (result == VK_ERROR_OUT_OF_DEVICE_MEMORY && !huge) {
