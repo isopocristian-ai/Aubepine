@@ -2176,7 +2176,20 @@ private:
     // nx2-frame-<n>.tga in <dir> (lets hidden test runs check the output; idea from changes.patch).
     void CaptureFrame() {
         static const char* const directory = std::getenv("EDEN_NX2_FRAME_CAPTURE");
-        if (directory == nullptr || (m_presents % 120) != 1 || m_capture_pending->exchange(true)) {
+        // EDEN_NX2_FRAME_BURST=<first>:<count>: also every present from <first> on (when the
+        // previous capture is done), to see flicker between consecutive frames.
+        static const std::pair<u64, u64> burst = [] {
+            const char* text = std::getenv("EDEN_NX2_FRAME_BURST");
+            if (text == nullptr) {
+                return std::pair<u64, u64>{};
+            }
+            char* end{};
+            const u64 first = std::strtoull(text, &end, 10);
+            return std::pair<u64, u64>{first, *end == ':' ? std::strtoull(end + 1, nullptr, 10) : 0};
+        }();
+        const bool in_burst = m_presents >= burst.first && m_presents < burst.first + burst.second;
+        if (directory == nullptr || ((m_presents % 120) != 1 && !in_burst) ||
+            m_capture_pending->exchange(true)) {
             return;
         }
         const auto layout = Layout::DefaultFrameLayout(1280, 720);

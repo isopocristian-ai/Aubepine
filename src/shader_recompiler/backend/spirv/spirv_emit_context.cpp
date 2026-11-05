@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <cstdlib>
 #include <array>
 #include <bit>
 #include <climits>
@@ -1058,8 +1059,13 @@ void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
 
     // 32-bit atomics, defined only for the operations the program uses. An address outside every
     // candidate buffer does nothing and returns 0.
+    // EDEN_NX2_GLOBAL_ATOMICS=0 leaves them undefined: programs using them are rejected again.
+    static const bool global_atomics = [] {
+        const char* value = std::getenv("EDEN_NX2_GLOBAL_ATOMICS");
+        return value == nullptr || value[0] != '0';
+    }();
     const auto define_atomic{[&](GlobalAtomicOp index, auto operation) {
-        if (Sirit::ValidId(global_atomic_funcs_u32[index])) {
+        if (!global_atomics || Sirit::ValidId(global_atomic_funcs_u32[index])) {
             return;
         }
         const Id function_type{TypeFunction(U32[1], U64, U32[1])};
