@@ -1,100 +1,112 @@
-From 184be4ecd7197e23dff7755420c5a0b16123f5fa Mon Sep 17 00:00:00 2001
+From 25e00c4df07a89a78fa0df9b4146d6aa9a45e24a Mon Sep 17 00:00:00 2001
 From: pattex67 <33281022+pattex67@users.noreply.github.com>
-Date: Tue, 3 Nov 2026 23:15:50 +0100
-Subject: [PATCH] =?UTF-8?q?Show=20the=20emulator=20as=20Aub=C3=A9pine=20(w?=
- =?UTF-8?q?indow=20title,=20menus,=20dialogs,=20version);=20hotkey=20ids?=
- =?UTF-8?q?=20and=20the=20Qt=20application=20name=20stay?=
+Date: Sun, 8 Nov 2026 00:34:42 +0100
+Subject: [PATCH 7/8] =?UTF-8?q?Show=20the=20emulator=20as=20Aub=C3=A9pine?=
+ =?UTF-8?q?=20(window=20title,=20menus,=20dialogs,=20version);=20eglantine?=
+ =?UTF-8?q?.exe?=
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
 
+As in the PokeDinner-based fork: the visible name is Aubépine, the executable keeps the name
+eglantine.exe, and the update repository points at pattex67/Aubepine (the update checker stays
+off in our builds). Kept on purpose: the hotkey id, QCoreApplication's application name, the eden
+data folder and the GitHub/Lichii links.
+
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
- CMakeModules/GenerateSCMRev.cmake                |  4 ++--
- dist/dev.eden_emu.eden.desktop                   |  2 +-
- dist/nx2_switches.txt                            |  2 +-
- src/qt_common/discord/discord_impl.cpp           |  2 +-
- src/qt_common/qt_common.cpp                      |  4 ++--
- src/yuzu/aboutdialog.ui                          |  8 ++++----
- src/yuzu/bootmanager.cpp                         |  4 ++--
- src/yuzu/configuration/configure.ui              |  2 +-
- src/yuzu/configuration/configure_debug.ui        |  2 +-
- src/yuzu/configuration/configure_general.cpp     |  2 +-
- .../configuration/configure_input_advanced.ui    |  6 +++---
- .../configuration/configure_motion_touch.cpp     | 12 ++++++------
- .../configure_touchscreen_advanced.ui            |  2 +-
- src/yuzu/configuration/configure_web.ui          |  2 +-
- src/yuzu/configuration/system/new_user_dialog.ui |  2 +-
- src/yuzu/deps_dialog.ui                          |  6 +++---
- src/yuzu/main.ui                                 |  8 ++++----
- src/yuzu/main_window.cpp                         | 16 ++++++++--------
- src/yuzu/ryujinx_dialog.ui                       |  6 +++---
- 19 files changed, 46 insertions(+), 46 deletions(-)
+ CMakeModules/GenerateSCMRev.cmake              | 10 +++++-----
+ src/qt_common/config/shared_translation.cpp    |  4 ++--
+ src/qt_common/discord/discord_impl.cpp         |  2 +-
+ src/qt_common/qt_common.cpp                    |  4 ++--
+ src/yuzu/CMakeLists.txt                        |  2 +-
+ src/yuzu/aboutdialog.ui                        |  8 ++++----
+ src/yuzu/bootmanager.cpp                       |  4 ++--
+ src/yuzu/compatibility_report.cpp              |  2 +-
+ src/yuzu/configuration/configure.ui            |  2 +-
+ src/yuzu/configuration/configure_debug.ui      |  2 +-
+ src/yuzu/configuration/configure_general.cpp   |  2 +-
+ .../configuration/configure_input_advanced.ui  |  6 +++---
+ .../configuration/configure_motion_touch.cpp   | 12 ++++++------
+ .../configure_touchscreen_advanced.ui          |  2 +-
+ src/yuzu/configuration/configure_web.ui        |  2 +-
+ src/yuzu/configuration/nvidia_dlss_panel.cpp   |  2 +-
+ .../configuration/system/new_user_dialog.ui    |  2 +-
+ src/yuzu/deps_dialog.ui                        |  6 +++---
+ src/yuzu/main.ui                               |  8 ++++----
+ src/yuzu/main_window.cpp                       | 18 +++++++++---------
+ src/yuzu/ryujinx_dialog.ui                     |  6 +++---
+ 21 files changed, 53 insertions(+), 53 deletions(-)
 
 diff --git a/CMakeModules/GenerateSCMRev.cmake b/CMakeModules/GenerateSCMRev.cmake
-index f50f0fa30..3a952bc1d 100644
+index bdd14dbf42..e70dc5c51b 100644
 --- a/CMakeModules/GenerateSCMRev.cmake
 +++ b/CMakeModules/GenerateSCMRev.cmake
-@@ -44,12 +44,12 @@ if (NIGHTLY_BUILD)
-     set(BUILD_AUTO_UPDATE_WEBSITE "https://git.eden-emu.dev")
-     set(BUILD_AUTO_UPDATE_API "nightly.eden-emu.dev")
-     set(BUILD_AUTO_UPDATE_REPO "eden-ci/nightly")
--    set(REPO_NAME "Eglantine Nightly")
+@@ -37,15 +37,15 @@ set(GIT_DESC ${BUILD_VERSION})
+ 
+ # Generate cpp with Git revision from template
+ 
+-set(BUILD_AUTO_UPDATE_STABLE_REPO "zortos293/Lichii")
++set(BUILD_AUTO_UPDATE_STABLE_REPO "pattex67/Aubepine")
+ set(BUILD_AUTO_UPDATE_STABLE_API "api.github.com")
+-set(BUILD_AUTO_UPDATE_API_PATH "/repos/zortos293/Lichii/releases?per_page=100")
++set(BUILD_AUTO_UPDATE_API_PATH "/repos/pattex67/Aubepine/releases?per_page=100")
+ set(BUILD_AUTO_UPDATE_WEBSITE "https://github.com")
+-set(BUILD_AUTO_UPDATE_REPO "zortos293/Lichii")
++set(BUILD_AUTO_UPDATE_REPO "pattex67/Aubepine")
+ if (NIGHTLY_BUILD)
+-    set(REPO_NAME "Lichii Nightly")
 +    set(REPO_NAME "Aubépine Nightly")
  else()
-     set(BUILD_AUTO_UPDATE_WEBSITE "https://git.eden-emu.dev")
-     set(BUILD_AUTO_UPDATE_API "stable.eden-emu.dev")
-     set(BUILD_AUTO_UPDATE_REPO "eden-emu/eden")
--    set(REPO_NAME "Eglantine")
+-    set(REPO_NAME "Lichii")
 +    set(REPO_NAME "Aubépine")
  endif()
  
  set(BUILD_ID ${GIT_REFSPEC})
-diff --git a/dist/dev.eden_emu.eden.desktop b/dist/dev.eden_emu.eden.desktop
-index 613cb1f3c..e6308cfed 100755
---- a/dist/dev.eden_emu.eden.desktop
-+++ b/dist/dev.eden_emu.eden.desktop
-@@ -7,7 +7,7 @@
- [Desktop Entry]
- Version=1.0
- Type=Application
--Name=Eglantine
-+Name=Aubépine
- GenericName=Switch Emulator
- Comment=Multiplatform FOSS Switch 1 emulator written in C++, derived from Yuzu and Sudachi
- Icon=dev.eglantine.eglantine
-diff --git a/dist/nx2_switches.txt b/dist/nx2_switches.txt
-index c81e9b368..5be4882b9 100644
---- a/dist/nx2_switches.txt
-+++ b/dist/nx2_switches.txt
-@@ -1,4 +1,4 @@
--# Switch NX2 - read at every start of Eglantine (GUI and CLI alike).
-+# Switch NX2 - read at every start of Aubépine (GUI and CLI alike).
- # One NAME=VALUE per line. Lines starting with # are ignored.
- # A variable already set in the environment wins over this file.
- # Between files, %APPDATA%\eden\nx2_switches.txt (yours) wins over this one, so editing
+diff --git a/src/qt_common/config/shared_translation.cpp b/src/qt_common/config/shared_translation.cpp
+index 2f76f716cf..6853db0239 100644
+--- a/src/qt_common/config/shared_translation.cpp
++++ b/src/qt_common/config/shared_translation.cpp
+@@ -155,7 +155,7 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
+            tr("Runs a Switch 2 game's own DLSS (its upscaling network, translated for this GPU) "
+               "instead of AMD FSR 3.1 in its place.\nAMD FSR 3.1 still draws while the network is "
+               "checked, when it can't run on this GPU, with resolution scaling, and for the rest "
+-              "of the session if its output fails Lichii's checks.\nTakes effect when a game "
++              "of the session if its output fails Aubépine's checks.\nTakes effect when a game "
+               "starts."));
+     INSERT(Settings, fsr_sharpening_slider, tr("RCAS Sharpness:"),
+            tr("Strength of RCAS (AMD's contrast-adaptive sharpening) on the upscaler used in place "
+@@ -164,7 +164,7 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
+     INSERT(Settings, nvidia_dlss, tr("Use NVIDIA DLSS in place of a game's DLSS (experimental)"),
+            tr("Uses NVIDIA DLSS on GeForce RTX cards in place of a Switch 2 game's own DLSS, "
+               "instead of AMD FSR 3.1.\nNeeds NVIDIA's Streamline loader, and NVIDIA DLSS unless "
+-              "the NVIDIA app has downloaded it; Lichii does not ship NVIDIA's files. Use the "
++              "the NVIDIA app has downloaded it; Aubépine does not ship NVIDIA's files. Use the "
+               "download button below.\nFire Emblem: Fortune's Weave also needs "
+               "EDEN_NX2_DLSS_REPLACEMENT=dlss. Without that override, its spatial workaround "
+               "remains active.\nIn The Legend of Zelda: Ocarina of Time it replaces the game's "
 diff --git a/src/qt_common/discord/discord_impl.cpp b/src/qt_common/discord/discord_impl.cpp
-index 7cf1216d8..79f17c688 100644
+index 13273f80ce..79f17c6883 100644
 --- a/src/qt_common/discord/discord_impl.cpp
 +++ b/src/qt_common/discord/discord_impl.cpp
 @@ -69,7 +69,7 @@ std::string DiscordImpl::GetGameString(const std::string& title) {
      return icon_name;
  }
  
--static constexpr char DEFAULT_DISCORD_TEXT[] = "Eglantine is an emulator for the Nintendo Switch";
+-static constexpr char DEFAULT_DISCORD_TEXT[] = "Lichii is an emulator for the Nintendo Switch";
 +static constexpr char DEFAULT_DISCORD_TEXT[] = "Aubépine is an emulator for the Nintendo Switch";
  static constexpr char DEFAULT_DISCORD_IMAGE[] =
      "https://git.eden-emu.dev/eden-emu/eden/raw/branch/master/dist/qt_themes/default/icons/256x256/"
      "eden.png";
 diff --git a/src/qt_common/qt_common.cpp b/src/qt_common/qt_common.cpp
-index 7ad7a477d..5e8c97120 100644
+index efa864ba12..5e8c971203 100644
 --- a/src/qt_common/qt_common.cpp
 +++ b/src/qt_common/qt_common.cpp
 @@ -235,14 +235,14 @@ void Init(QWidget* root) {
      const auto build_id = std::string(Common::g_build_id);
  
      const auto yuzu_build =
--        fmt::format("Eglantine Development Build | {}-{}", branch_name, description);
+-        fmt::format("Lichii Development Build | {}-{}", branch_name, description);
 +        fmt::format("Aubépine Development Build | {}-{}", branch_name, description);
      const auto override_build =
          fmt::format(fmt::runtime(std::string(Common::g_title_bar_format_idle)), build_id);
@@ -102,20 +114,33 @@ index 7ad7a477d..5e8c97120 100644
      const auto processor_count = std::thread::hardware_concurrency();
  
      // info logging
--    LOG_INFO(Frontend, "Eglantine Version: {}", yuzu_build_version);
+-    LOG_INFO(Frontend, "Lichii Version: {}", yuzu_build_version);
 +    LOG_INFO(Frontend, "Aubépine Version: {}", yuzu_build_version);
      LogRuntimes();
  #ifdef ARCHITECTURE_x86_64
      const auto& caps = Common::g_cpu_caps;
+diff --git a/src/yuzu/CMakeLists.txt b/src/yuzu/CMakeLists.txt
+index 841f15fd33..ebb80ccfa0 100644
+--- a/src/yuzu/CMakeLists.txt
++++ b/src/yuzu/CMakeLists.txt
+@@ -253,7 +253,7 @@ add_executable(yuzu
+     game/carousel.h game/carousel.cpp
+ )
+ 
+-set_target_properties(yuzu PROPERTIES OUTPUT_NAME "lichii")
++set_target_properties(yuzu PROPERTIES OUTPUT_NAME "eglantine")
+ 
+ # Shipped next to the executable: the NX2 switches a GUI launch cannot set another way. Read at
+ # startup (LoadNx2Switches in main.cpp); a user copy in %APPDATA%\eden overrides it.
 diff --git a/src/yuzu/aboutdialog.ui b/src/yuzu/aboutdialog.ui
-index ff5d0c973..16b909b8b 100644
+index 70c2f814a6..c53f2b305d 100644
 --- a/src/yuzu/aboutdialog.ui
 +++ b/src/yuzu/aboutdialog.ui
 @@ -11,7 +11,7 @@
     </rect>
    </property>
    <property name="windowTitle">
--    <string>About Eglantine</string>
+-    <string>About Lichii</string>
 +    <string>About Aubépine</string>
    </property>
    <layout class="QVBoxLayout" name="verticalLayout_3">
@@ -124,7 +149,7 @@ index ff5d0c973..16b909b8b 100644
            </sizepolicy>
           </property>
           <property name="text">
--          <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;&lt;span style=&quot; font-size:28pt;&quot;&gt;Eglantine&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+-          <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;&lt;span style=&quot; font-size:28pt;&quot;&gt;Lichii&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
 +          <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;&lt;span style=&quot; font-size:28pt;&quot;&gt;Aubépine&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
           </property>
          </widget>
@@ -133,8 +158,8 @@ index ff5d0c973..16b909b8b 100644
  li.unchecked::marker { content: &quot;\2610&quot;; }
  li.checked::marker { content: &quot;\2612&quot;; }
  &lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Noto Sans'; font-size:9pt; font-weight:400; font-style:normal;&quot;&gt;
--&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-family:'MS Shell Dlg 2'; font-size:12pt;&quot;&gt;Eglantine is an experimental open-source emulator for the Nintendo Switch 2, based on the Eden emulator. &lt;br /&gt;&lt;br /&gt;This software should not be used to play games you have not legally obtained.&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
-+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-family:'MS Shell Dlg 2'; font-size:12pt;&quot;&gt;Aubépine is an experimental open-source emulator for the Nintendo Switch 2, a fork of Eglantine (based on the Eden emulator) and PokeDinner. &lt;br /&gt;&lt;br /&gt;This software should not be used to play games you have not legally obtained.&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-family:'MS Shell Dlg 2'; font-size:12pt;&quot;&gt;Lichii is an experimental open-source emulator for the Nintendo Switch 2, based on Eglantine and Eden. &lt;br /&gt;&lt;br /&gt;This software should not be used to play games you have not legally obtained.&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
++&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-family:'MS Shell Dlg 2'; font-size:12pt;&quot;&gt;Aubépine is an experimental open-source emulator for the Nintendo Switch 2, based on Eglantine and Eden. &lt;br /&gt;&lt;br /&gt;This software should not be used to play games you have not legally obtained.&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
           </property>
           <property name="alignment">
            <set>Qt::AlignmentFlag::AlignLeading|Qt::AlignmentFlag::AlignLeft|Qt::AlignmentFlag::AlignVCenter</set>
@@ -142,20 +167,20 @@ index ff5d0c973..16b909b8b 100644
            </sizepolicy>
           </property>
           <property name="text">
--          <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;&lt;span style=&quot; font-size:7pt;&quot;&gt;&amp;quot;Nintendo Switch&amp;quot; is a trademark of Nintendo. Eglantine is not affiliated with Nintendo in any way.&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+-          <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;&lt;span style=&quot; font-size:7pt;&quot;&gt;&amp;quot;Nintendo Switch&amp;quot; is a trademark of Nintendo. Lichii is not affiliated with Nintendo in any way.&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
 +          <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;&lt;span style=&quot; font-size:7pt;&quot;&gt;&amp;quot;Nintendo Switch&amp;quot; is a trademark of Nintendo. Aubépine is not affiliated with Nintendo in any way.&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
           </property>
          </widget>
         </item>
 diff --git a/src/yuzu/bootmanager.cpp b/src/yuzu/bootmanager.cpp
-index 7b68e0761..22bac300e 100644
+index b5eeea0167..22bac300e2 100644
 --- a/src/yuzu/bootmanager.cpp
 +++ b/src/yuzu/bootmanager.cpp
 @@ -118,7 +118,7 @@ struct NullRenderWidget : public RenderWidget {
  GRenderWindow::GRenderWindow(MainWindow* parent,
                               std::shared_ptr<InputCommon::InputSubsystem> input_subsystem_)
      : QWidget(parent), input_subsystem{std::move(input_subsystem_)} {
--    setWindowTitle(QStringLiteral("Eglantine %1 | %2-%3")
+-    setWindowTitle(QStringLiteral("Lichii %1 | %2-%3")
 +    setWindowTitle(QStringLiteral("Aubépine %1 | %2-%3")
                         .arg(QString::fromUtf8(Common::g_build_name),
                              QString::fromUtf8(Common::g_scm_branch),
@@ -164,59 +189,72 @@ index 7b68e0761..22bac300e 100644
      return true;
  #else
      QMessageBox::warning(this, tr("OpenGL not available!"),
--                         tr("Eglantine has not been compiled with OpenGL support."));
+-                         tr("Lichii has not been compiled with OpenGL support."));
 +                         tr("Aubépine has not been compiled with OpenGL support."));
      return false;
  #endif
  }
+diff --git a/src/yuzu/compatibility_report.cpp b/src/yuzu/compatibility_report.cpp
+index db61233fe4..b9dcb7d743 100644
+--- a/src/yuzu/compatibility_report.cpp
++++ b/src/yuzu/compatibility_report.cpp
+@@ -187,7 +187,7 @@ Dialog::Dialog(const Session& session, QNetworkAccessManager* network_, QWidget*
+                       "not collected. Do not paste logs, paths, keys or private details."));
+     setup_notice->setWordWrap(true);
+     setup->addRow(setup_notice);
+-    line(setup, QStringLiteral("build"), tr("Lichii build"), Known(session.build));
++    line(setup, QStringLiteral("build"), tr("Aubépine build"), Known(session.build));
+     line(setup, QStringLiteral("gameVersion"), tr("Game version"), Known(session.game_version));
+     line(setup, QStringLiteral("cpu"), tr("CPU"), Known(session.cpu));
+     line(setup, QStringLiteral("gpu"), tr("GPU"), Known(session.gpu));
 diff --git a/src/yuzu/configuration/configure.ui b/src/yuzu/configuration/configure.ui
-index f0f93afdc..a07bf14f4 100644
+index 5e7f954bd8..a07bf14f4d 100644
 --- a/src/yuzu/configuration/configure.ui
 +++ b/src/yuzu/configuration/configure.ui
 @@ -17,7 +17,7 @@
     </size>
    </property>
    <property name="windowTitle">
--    <string>Eglantine Configuration</string>
+-    <string>Lichii Configuration</string>
 +    <string>Aubépine Configuration</string>
    </property>
    <layout class="QVBoxLayout" name="verticalLayout">
     <item>
 diff --git a/src/yuzu/configuration/configure_debug.ui b/src/yuzu/configuration/configure_debug.ui
-index 12cbd29e1..192983aa5 100644
+index 1815d9394b..192983aa52 100644
 --- a/src/yuzu/configuration/configure_debug.ui
 +++ b/src/yuzu/configuration/configure_debug.ui
 @@ -784,7 +784,7 @@
         </font>
        </property>
        <property name="text">
--    <string>**This will be reset automatically when Eglantine closes.</string>
+-    <string>**This will be reset automatically when Lichii closes.</string>
 +    <string>**This will be reset automatically when Aubépine closes.</string>
        </property>
        <property name="indent">
         <number>20</number>
 diff --git a/src/yuzu/configuration/configure_general.cpp b/src/yuzu/configuration/configure_general.cpp
-index 14776392c..f8f4dfd0c 100644
+index 76f096587e..f8f4dfd0cd 100644
 --- a/src/yuzu/configuration/configure_general.cpp
 +++ b/src/yuzu/configuration/configure_general.cpp
 @@ -98,7 +98,7 @@ void ConfigureGeneral::SetResetCallback(std::function<void()> callback) {
  
  void ConfigureGeneral::ResetDefaults() {
      QMessageBox::StandardButton answer = QMessageBox::question(
--        this, tr("Eglantine"),
+-        this, tr("Lichii"),
 +        this, tr("Aubépine"),
          tr("This reset all settings and remove all per-game configurations. This will not delete "
             "game directories, profiles, or input profiles. Proceed?"),
          QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
 diff --git a/src/yuzu/configuration/configure_input_advanced.ui b/src/yuzu/configuration/configure_input_advanced.ui
-index 06b688383..3945fc9d6 100644
+index 622c73ad09..3945fc9d68 100644
 --- a/src/yuzu/configuration/configure_input_advanced.ui
 +++ b/src/yuzu/configuration/configure_input_advanced.ui
 @@ -2656,7 +2656,7 @@
                     <item row="2" column="0">
                       <widget class="QCheckBox" name="enable_raw_input">
                         <property name="toolTip">
--                         <string>Requires restarting Eglantine</string>
+-                         <string>Requires restarting Lichii</string>
 +                         <string>Requires restarting Aubépine</string>
                         </property>
                         <property name="minimumSize">
@@ -225,7 +263,7 @@ index 06b688383..3945fc9d6 100644
                     <item row="5" column="0">
                        <widget class="QCheckBox" name="enable_joycon_driver">
                         <property name="toolTip">
--                         <string>Requires restarting Eglantine</string>
+-                         <string>Requires restarting Lichii</string>
 +                         <string>Requires restarting Aubépine</string>
                         </property>
                         <property name="minimumSize">
@@ -234,44 +272,44 @@ index 06b688383..3945fc9d6 100644
                     <item row="6" column="0">
                        <widget class="QCheckBox" name="enable_procon_driver">
                         <property name="toolTip">
--                         <string>Requires restarting Eglantine</string>
+-                         <string>Requires restarting Lichii</string>
 +                         <string>Requires restarting Aubépine</string>
                         </property>
                         <property name="minimumSize">
                           <size>
 diff --git a/src/yuzu/configuration/configure_motion_touch.cpp b/src/yuzu/configuration/configure_motion_touch.cpp
-index 571d9a6ec..70afd5136 100644
+index e3689bf530..70afd5136f 100644
 --- a/src/yuzu/configuration/configure_motion_touch.cpp
 +++ b/src/yuzu/configuration/configure_motion_touch.cpp
 @@ -163,27 +163,27 @@ void ConfigureMotionTouch::OnUDPAddServer() {
      const int row = udp_server_list_model->rowCount();
  
      if (!ok) {
--        QMessageBox::warning(this, tr("Eglantine"), tr("Port number has invalid characters"));
+-        QMessageBox::warning(this, tr("Lichii"), tr("Port number has invalid characters"));
 +        QMessageBox::warning(this, tr("Aubépine"), tr("Port number has invalid characters"));
          return;
      }
      if (port_number < 0 || port_number > 65353) {
--        QMessageBox::warning(this, tr("Eglantine"), tr("Port has to be in range 0 and 65353"));
+-        QMessageBox::warning(this, tr("Lichii"), tr("Port has to be in range 0 and 65353"));
 +        QMessageBox::warning(this, tr("Aubépine"), tr("Port has to be in range 0 and 65353"));
          return;
      }
      if (!re.match(server_text).hasMatch()) {
--        QMessageBox::warning(this, tr("Eglantine"), tr("IP address is not valid"));
+-        QMessageBox::warning(this, tr("Lichii"), tr("IP address is not valid"));
 +        QMessageBox::warning(this, tr("Aubépine"), tr("IP address is not valid"));
          return;
      }
      // Search for duplicates
      for (const auto& item : udp_server_list_model->stringList()) {
          if (item == server_string) {
--            QMessageBox::warning(this, tr("Eglantine"), tr("This UDP server already exists"));
+-            QMessageBox::warning(this, tr("Lichii"), tr("This UDP server already exists"));
 +            QMessageBox::warning(this, tr("Aubépine"), tr("This UDP server already exists"));
              return;
          }
      }
      // Limit server count to 8
      if (row == 8) {
--        QMessageBox::warning(this, tr("Eglantine"), tr("Unable to add more than 8 servers"));
+-        QMessageBox::warning(this, tr("Lichii"), tr("Unable to add more than 8 servers"));
 +        QMessageBox::warning(this, tr("Aubépine"), tr("Unable to add more than 8 servers"));
          return;
      }
@@ -280,59 +318,72 @@ index 571d9a6ec..70afd5136 100644
  
  bool ConfigureMotionTouch::CanCloseDialog() {
      if (udp_test_in_progress) {
--        QMessageBox::warning(this, tr("Eglantine"),
+-        QMessageBox::warning(this, tr("Lichii"),
 +        QMessageBox::warning(this, tr("Aubépine"),
                               tr("UDP Test or calibration configuration is in progress.<br>Please "
                                  "wait for them to finish."));
          return false;
 diff --git a/src/yuzu/configuration/configure_touchscreen_advanced.ui b/src/yuzu/configuration/configure_touchscreen_advanced.ui
-index 9490e871c..e0634fc05 100644
+index 662cc1a747..e0634fc05b 100644
 --- a/src/yuzu/configuration/configure_touchscreen_advanced.ui
 +++ b/src/yuzu/configuration/configure_touchscreen_advanced.ui
 @@ -23,7 +23,7 @@
        </size>
       </property>
       <property name="text">
--      <string>Warning: The settings in this page affect the inner workings of Eglantine's emulated touchscreen. Changing them may result in undesirable behavior, such as the touchscreen partially or not working. You should only use this page if you know what you are doing.</string>
+-      <string>Warning: The settings in this page affect the inner workings of Lichii's emulated touchscreen. Changing them may result in undesirable behavior, such as the touchscreen partially or not working. You should only use this page if you know what you are doing.</string>
 +      <string>Warning: The settings in this page affect the inner workings of Aubépine's emulated touchscreen. Changing them may result in undesirable behavior, such as the touchscreen partially or not working. You should only use this page if you know what you are doing.</string>
       </property>
       <property name="wordWrap">
        <bool>true</bool>
 diff --git a/src/yuzu/configuration/configure_web.ui b/src/yuzu/configuration/configure_web.ui
-index 91b338318..7361c63ac 100644
+index 34900e3317..7361c63acb 100644
 --- a/src/yuzu/configuration/configure_web.ui
 +++ b/src/yuzu/configuration/configure_web.ui
 @@ -22,7 +22,7 @@
       <item>
        <widget class="QGroupBox" name="groupBoxWebConfig">
         <property name="title">
--        <string>Eglantine Web Service</string>
+-        <string>Lichii Web Service</string>
 +        <string>Aubépine Web Service</string>
         </property>
         <layout class="QVBoxLayout" name="verticalLayoutYuzuWebService">
          <item>
+diff --git a/src/yuzu/configuration/nvidia_dlss_panel.cpp b/src/yuzu/configuration/nvidia_dlss_panel.cpp
+index fac8132902..f8867fbd4a 100644
+--- a/src/yuzu/configuration/nvidia_dlss_panel.cpp
++++ b/src/yuzu/configuration/nvidia_dlss_panel.cpp
+@@ -459,7 +459,7 @@ void NvidiaDlssPanel::Download() {
+     dialog.setWindowTitle(Tr("Download NVIDIA DLSS"));
+     QVBoxLayout* layout = new QVBoxLayout(&dialog);
+     QLabel* intro = new QLabel(
+-        Tr("Lichii will download %1 from NVIDIA's Streamline %2 release on GitHub into %3.<br>"
++        Tr("Aubépine will download %1 from NVIDIA's Streamline %2 release on GitHub into %3.<br>"
+            "These files are NVIDIA's, under NVIDIA's licence terms below.")
+             .arg(names.join(QStringLiteral(" and ")), QString::fromLatin1(RELEASE_VERSION),
+                  PathText(folder)),
 diff --git a/src/yuzu/configuration/system/new_user_dialog.ui b/src/yuzu/configuration/system/new_user_dialog.ui
-index e20628b02..dbefe72cf 100644
+index e864ba4249..dbefe72cfe 100644
 --- a/src/yuzu/configuration/system/new_user_dialog.ui
 +++ b/src/yuzu/configuration/system/new_user_dialog.ui
 @@ -57,7 +57,7 @@
       <item row="0" column="1" colspan="2">
        <widget class="QLineEdit" name="username">
         <property name="text">
--        <string>Eglantine</string>
+-        <string>Lichii</string>
 +        <string>Aubépine</string>
         </property>
        </widget>
       </item>
 diff --git a/src/yuzu/deps_dialog.ui b/src/yuzu/deps_dialog.ui
-index bd5be9760..82b621de4 100644
+index 15764e6180..6463f793b0 100644
 --- a/src/yuzu/deps_dialog.ui
 +++ b/src/yuzu/deps_dialog.ui
 @@ -11,7 +11,7 @@
     </rect>
    </property>
    <property name="windowTitle">
--    <string>Eglantine Dependencies</string>
+-    <string>Lichii Dependencies</string>
 +    <string>Aubépine Dependencies</string>
    </property>
    <layout class="QVBoxLayout" name="verticalLayout_3">
@@ -341,7 +392,7 @@ index bd5be9760..82b621de4 100644
            </sizepolicy>
           </property>
           <property name="text">
--          <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;&lt;span style=&quot; font-size:28pt;&quot;&gt;Eglantine Dependencies&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+-          <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;&lt;span style=&quot; font-size:28pt;&quot;&gt;Lichii Dependencies&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
 +          <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;&lt;span style=&quot; font-size:28pt;&quot;&gt;Aubépine Dependencies&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
           </property>
          </widget>
@@ -350,20 +401,20 @@ index bd5be9760..82b621de4 100644
            </sizepolicy>
           </property>
           <property name="text">
--        <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;The projects that make Eglantine possible&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+-        <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;The projects that make Lichii possible&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
 +        <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;The projects that make Aubépine possible&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
           </property>
          </widget>
         </item>
 diff --git a/src/yuzu/main.ui b/src/yuzu/main.ui
-index 5fe25aa25..32eb58131 100644
+index 5b9013e254..e639e65fd1 100644
 --- a/src/yuzu/main.ui
 +++ b/src/yuzu/main.ui
 @@ -11,7 +11,7 @@
     </rect>
    </property>
    <property name="windowTitle">
--  <string>Eglantine</string>
+-  <string>Lichii</string>
 +  <string>Aubépine</string>
    </property>
    <property name="windowIcon">
@@ -372,7 +423,7 @@ index 5fe25aa25..32eb58131 100644
      </widget>
      <widget class="QMenu" name="menuOpen_Eden_Folders">
       <property name="title">
--      <string>Open &amp;Eglantine Folders</string>
+-      <string>Open &amp;Lichii Folders</string>
 +      <string>Open &amp;Aubépine Folders</string>
       </property>
       <addaction name="action_Root_Data_Folder"/>
@@ -381,7 +432,7 @@ index 5fe25aa25..32eb58131 100644
    </action>
    <action name="action_About">
     <property name="text">
--    <string>&amp;About Eglantine</string>
+-    <string>&amp;About Lichii</string>
 +    <string>&amp;About Aubépine</string>
     </property>
    </action>
@@ -390,96 +441,105 @@ index 5fe25aa25..32eb58131 100644
    </action>
    <action name="action_Eden_Dependencies">
     <property name="text">
--    <string>&amp;Eglantine Dependencies</string>
+-    <string>&amp;Lichii Dependencies</string>
 +    <string>&amp;Aubépine Dependencies</string>
     </property>
    </action>
    <action name="action_Data_Manager">
 diff --git a/src/yuzu/main_window.cpp b/src/yuzu/main_window.cpp
-index e1a78dbf4..c5cd270c9 100644
+index 58448ac6e0..9b2066acfc 100644
 --- a/src/yuzu/main_window.cpp
 +++ b/src/yuzu/main_window.cpp
-@@ -1932,7 +1932,7 @@ void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletPa
+@@ -1939,7 +1939,7 @@ bool MainWindow::LoadROM(const QString& filename, Service::AM::FrontendAppletPar
+         case Core::SystemResultStatus::ErrorMemoryAllocation:
+             QMessageBox::critical(
+                 this, tr("Not enough memory to start the game"),
+-                tr("Lichii could not allocate the game's memory. Close other applications and "
++                tr("Aubépine could not allocate the game's memory. Close other applications and "
+                    "check that your system has enough available memory and paging-file space, "
+                    "then try again."));
+             break;
+@@ -2035,7 +2035,7 @@ void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletPa
      if (close_pending) {
          return;
      }
--    LOG_INFO(Frontend, "Eglantine starting...");
+-    LOG_INFO(Frontend, "Lichii starting...");
 +    LOG_INFO(Frontend, "Aubépine starting...");
+     report_session.reset();
+     game_list->SetReportableProgramId(0);
  
-     if (params.program_id == 0 ||
-         params.program_id > static_cast<u64>(Service::AM::AppletProgramId::MaxProgramId)) {
-@@ -4394,7 +4394,7 @@ void MainWindow::OnApplicationChanged(u64 program_id) {
- void MainWindow::UpdateWindowTitle(std::string_view title_name, std::string_view title_version,
-                                    std::string_view gpu_vendor) {
-     static const std::string build_id = std::string{Common::g_build_id};
--    static const std::string yuzu_title = "Eglantine - PokeDinner fork by Franseven";
-+    static const std::string yuzu_title = "Aubépine - fork of Eglantine and PokeDinner (Franseven)";
- 
-     const auto override_title =
-         fmt::format(fmt::runtime(std::string(Common::g_title_bar_format_idle)), build_id);
-@@ -4708,7 +4708,7 @@ void MainWindow::OnCheckGraphicsBackend() {
+@@ -2204,7 +2204,7 @@ void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletPa
+         }
+         session.mods = CompatibilityReporting::SummarizeEnabledAddons(mods);
+         session.updates = CompatibilityReporting::SummarizeEnabledAddons(updates);
+-        session.build = QStringLiteral("Lichii %1 (%2)")
++        session.build = QStringLiteral("Aubépine %1 (%2)")
+                             .arg(QString::fromUtf8(Common::g_build_version),
+                                  QString::fromUtf8(Common::g_scm_rev).left(12));
+ #ifdef ARCHITECTURE_x86_64
+@@ -5232,7 +5232,7 @@ void MainWindow::OnCheckGraphicsBackend() {
          UISettings::values.gui_force_x11.SetValue(true);
          GraphicsBackend::SetForceX11(true);
          QMessageBox::information(this, tr("Restart Required"),
--                                 tr("Restart Eglantine to apply the X11 backend."));
+-                                 tr("Restart Lichii to apply the X11 backend."));
 +                                 tr("Restart Aubépine to apply the X11 backend."));
      }
  }
  #endif
-@@ -4827,8 +4827,8 @@ bool MainWindow::ConfirmClose() {
+@@ -5351,8 +5351,8 @@ bool MainWindow::ConfirmClose() {
          UISettings::values.confirm_before_stopping.GetValue() == ConfirmStop::Ask_Based_On_Game)
          return true;
  
--    const auto text = tr("Are you sure you want to close Eglantine?");
--    return question(this, tr("Eglantine"), text);
+-    const auto text = tr("Are you sure you want to close Lichii?");
+-    return question(this, tr("Lichii"), text);
 +    const auto text = tr("Are you sure you want to close Aubépine?");
 +    return question(this, tr("Aubépine"), text);
  }
  
  void MainWindow::closeEvent(QCloseEvent* event) {
-@@ -4934,7 +4934,7 @@ bool MainWindow::ConfirmChangeGame() {
+@@ -5458,7 +5458,7 @@ bool MainWindow::ConfirmChangeGame() {
  
      // Use custom question to link controller navigation
      return question(
--        this, tr("Eglantine"),
+-        this, tr("Lichii"),
 +        this, tr("Aubépine"),
          tr("Are you sure you want to stop the emulation? Any unsaved progress will be lost."),
          QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
  }
-@@ -4943,10 +4943,10 @@ bool MainWindow::ConfirmForceLockedExit() {
+@@ -5467,10 +5467,10 @@ bool MainWindow::ConfirmForceLockedExit() {
      if (QtCommon::emu_thread == nullptr)
          return true;
  
--    const auto text = tr("The currently running application has requested Eglantine to not exit.\n\n"
+-    const auto text = tr("The currently running application has requested Lichii to not exit.\n\n"
 +    const auto text = tr("The currently running application has requested Aubépine to not exit.\n\n"
                           "Would you like to bypass this and exit anyway?");
  
--    return question(this, tr("Eglantine"), text);
+-    return question(this, tr("Lichii"), text);
 +    return question(this, tr("Aubépine"), text);
  }
  
  void MainWindow::RequestGameExit() {
 diff --git a/src/yuzu/ryujinx_dialog.ui b/src/yuzu/ryujinx_dialog.ui
-index 511a6c5ba..db4e7b666 100644
+index 2dc80a752b..db4e7b6669 100644
 --- a/src/yuzu/ryujinx_dialog.ui
 +++ b/src/yuzu/ryujinx_dialog.ui
 @@ -23,9 +23,9 @@
        </sizepolicy>
       </property>
       <property name="text">
--      <string>Linking save data to Ryujinx lets both Ryujinx and Eglantine reference the same save files for your games.
+-      <string>Linking save data to Ryujinx lets both Ryujinx and Lichii reference the same save files for your games.
 +      <string>Linking save data to Ryujinx lets both Ryujinx and Aubépine reference the same save files for your games.
  
--By selecting &quot;From Eglantine&quot;, previous save data stored in Ryujinx will be deleted, and vice versa for &quot;From Ryujinx&quot;.</string>
+-By selecting &quot;From Lichii&quot;, previous save data stored in Ryujinx will be deleted, and vice versa for &quot;From Ryujinx&quot;.</string>
 +By selecting &quot;From Aubépine&quot;, previous save data stored in Ryujinx will be deleted, and vice versa for &quot;From Ryujinx&quot;.</string>
       </property>
       <property name="wordWrap">
        <bool>true</bool>
-@@ -37,7 +37,7 @@ By selecting &quot;From Eglantine&quot;, previous save data stored in Ryujinx wi
+@@ -37,7 +37,7 @@ By selecting &quot;From Lichii&quot;, previous save data stored in Ryujinx will
       <item>
        <widget class="QPushButton" name="eden">
         <property name="text">
--      <string>From Eglantine</string>
+-      <string>From Lichii</string>
 +      <string>From Aubépine</string>
         </property>
        </widget>

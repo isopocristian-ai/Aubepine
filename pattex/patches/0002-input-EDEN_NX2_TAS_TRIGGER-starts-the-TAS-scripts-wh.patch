@@ -1,0 +1,70 @@
+From cc1e8c7800f24192e21d5862543095cb0a9d7584 Mon Sep 17 00:00:00 2001
+From: pattex67 <33281022+pattex67@users.noreply.github.com>
+Date: Sun, 8 Nov 2026 00:34:40 +0100
+Subject: [PATCH 2/8] input: EDEN_NX2_TAS_TRIGGER starts the TAS scripts when a
+ file appears (remote testing)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/input_common/drivers/tas_input.cpp | 21 +++++++++++++++++++++
+ src/input_common/drivers/tas_input.h   |  3 +++
+ 2 files changed, 24 insertions(+)
+
+diff --git a/src/input_common/drivers/tas_input.cpp b/src/input_common/drivers/tas_input.cpp
+index 32febc0839..2a79a419b9 100644
+--- a/src/input_common/drivers/tas_input.cpp
++++ b/src/input_common/drivers/tas_input.cpp
+@@ -4,7 +4,9 @@
+ // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
++#include <cstdlib>
+ #include <cstring>
++#include <filesystem>
+ #include <sstream>
+ #include <fmt/ranges.h>
+ 
+@@ -180,7 +182,26 @@ std::tuple<TasState, size_t, std::array<size_t, PLAYER_NUMBER>> Tas::GetStatus()
+     return {state, current_command, lengths};
+ }
+ 
++void Tas::CheckTrigger() {
++    // EDEN_NX2_TAS_TRIGGER=<file>: when the file appears it is deleted and the scripts are loaded
++    // and played from the start, so that they can be run without touching the window.
++    static const char* const trigger = std::getenv("EDEN_NX2_TAS_TRIGGER");
++    if (trigger == nullptr) {
++        return;
++    }
++    std::error_code ec;
++    if (!std::filesystem::exists(trigger, ec)) {
++        return;
++    }
++    std::filesystem::remove(trigger, ec);
++    Settings::values.tas_enable.SetValue(true);
++    needs_reset = true;
++    is_running = true;
++    LOG_INFO(Input, "TAS scripts started by {}", trigger);
++}
++
+ void Tas::UpdateThread() {
++    CheckTrigger();
+     if (!Settings::values.tas_enable) {
+         if (is_running) {
+             Stop();
+diff --git a/src/input_common/drivers/tas_input.h b/src/input_common/drivers/tas_input.h
+index 5be66d142f..9e1eb12957 100644
+--- a/src/input_common/drivers/tas_input.h
++++ b/src/input_common/drivers/tas_input.h
+@@ -188,6 +188,9 @@ private:
+     /// Sets an axis for a particular pad to the given value.
+     void SetTasAxis(const PadIdentifier& identifier, TasAxis axis, f32 value);
+ 
++    /// Starts the scripts when the file named by EDEN_NX2_TAS_TRIGGER appears.
++    void CheckTrigger();
++
+     size_t script_length{0};
+     bool is_recording{false};
+     bool is_running{false};
+-- 
+2.51.0.windows.1
+

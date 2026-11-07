@@ -1,0 +1,72 @@
+From 1e59711cfdac7e34a0c162ae48953898d05d84d7 Mon Sep 17 00:00:00 2001
+From: pattex67 <33281022+pattex67@users.noreply.github.com>
+Date: Sun, 8 Nov 2026 00:34:40 +0100
+Subject: [PATCH 3/8] qt: remember the Mario Kart World recommended-settings
+ answer (Don't ask again)
+
+From our PokeDinner-based fork: mkw_recommended_choice (0 ask, 1 yes, 2 no).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/qt_common/config/uisettings.h |  3 +++
+ src/yuzu/main_window.cpp          | 26 ++++++++++++++++++++------
+ 2 files changed, 23 insertions(+), 6 deletions(-)
+
+diff --git a/src/qt_common/config/uisettings.h b/src/qt_common/config/uisettings.h
+index 834efaa1f8..4212c0b1cd 100644
+--- a/src/qt_common/config/uisettings.h
++++ b/src/qt_common/config/uisettings.h
+@@ -143,6 +143,9 @@ struct Values {
+     Setting<std::string> skipped_update_tag{linkage, {}, "skipped_update_tag", Category::Ui};
+     Setting<unsigned long long> update_remind_at{linkage, 0, "update_remind_at", Category::Ui};
+ 
++    // Mario Kart World recommended settings prompt: 0 = ask at every boot, 1 = always use, 2 = never
++    Setting<u8> mkw_recommended_choice{linkage, 0, "mkw_recommended_choice", Category::UiGeneral};
++
+     // Linux/MinGW may support (requires libdl support)
+     SwitchableSetting<bool> enable_gamemode{linkage,
+ #ifndef _MSC_VER
+diff --git a/src/yuzu/main_window.cpp b/src/yuzu/main_window.cpp
+index 1ae0a812e5..58448ac6e0 100644
+--- a/src/yuzu/main_window.cpp
++++ b/src/yuzu/main_window.cpp
+@@ -2073,16 +2073,30 @@ void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletPa
+ 
+     if (title_id == Settings::MarioKartWorldProgramId && !asked_recommended_mkw_settings) {
+         asked_recommended_mkw_settings = true;
+-        use_recommended_mkw_settings =
+-            QMessageBox::question(
+-                this, tr("Recommended Mario Kart World settings"),
++        // The answer can be remembered (UISettings mkw_recommended_choice: 0 ask, 1 yes, 2 no).
++        auto& choice = UISettings::values.mkw_recommended_choice;
++        if (choice.GetValue() == 0) {
++            QMessageBox box(
++                QMessageBox::Question, tr("Recommended Mario Kart World settings"),
+                 tr("Use the recommended settings for Mario Kart World?\n\n"
+                    "Vulkan, 1x resolution, GPU Fast, asynchronous shaders, BC3, conservative VRAM, "
+                    "reactive flushing off, FIFO Relaxed VSync, handheld mode, ScaleForce, and "
+                    "FXAA.\n\n"
+-                   "They apply to Mario Kart World until Lichii is closed. Your saved settings "
+-                   "are not changed."),
+-                QMessageBox::Yes | QMessageBox::No, QMessageBox::No) == QMessageBox::Yes;
++                   "They apply to Mario Kart World until the emulator is closed. Your saved "
++                   "settings are not changed."),
++                QMessageBox::Yes | QMessageBox::No, this);
++            box.setDefaultButton(QMessageBox::No);
++            box.setEscapeButton(QMessageBox::No);
++            auto* remember = new QCheckBox(tr("Don't ask again"), &box);
++            box.setCheckBox(remember);
++            use_recommended_mkw_settings = box.exec() == QMessageBox::Yes;
++            if (remember->isChecked()) {
++                choice.SetValue(use_recommended_mkw_settings ? 1 : 2);
++                config->SaveAllValues();
++            }
++        } else {
++            use_recommended_mkw_settings = choice.GetValue() == 1;
++        }
+         LOG_INFO(Config, "MKW recommended settings accepted: {}", use_recommended_mkw_settings);
+     }
+     if (Settings::ApplyMarioKartWorldPreset(Settings::values, title_id,
+-- 
+2.51.0.windows.1
+

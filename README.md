@@ -12,11 +12,10 @@
   <br>
 </h1>
 
-<h4 align="center"><b>Aubépine</b> is an experimental Nintendo Switch 2 emulator: a fork of
-<a href="https://github.com/Djihads80/Eglantine">Eglantine</a> and
-<a href="https://git.eden-emu.dev/Franseven/PokeDinner-a-Eglantine-Fork">PokeDinner</a>
-(both based on Eden, Yuzu and Sudachi), gathering fixes from several forks and adding its own work
-on games that did not run elsewhere.</h4>
+<h4 align="center"><b>Aubépine</b> is an experimental Nintendo Switch 2 emulator, tuned on an AMD
+Radeon: a fork of <a href="https://github.com/zortos293/Lichii">Lichii</a>, itself a fork of
+<a href="https://github.com/Djihads80/Eglantine">Eglantine</a> (based on Eden, Yuzu and Sudachi),
+with a few fixes of its own for the games we play on AMD.</h4>
 
 <p align="center">
   <a href="#what-it-adds">What it adds</a> |
@@ -30,38 +29,23 @@ on games that did not run elsewhere.</h4>
 
 ## What it adds
 
-- **Made on an AMD Radeon.** Aubépine is developed and tested on a Radeon RX 9070 XT (AMD driver,
-  Windows), and several of its fixes target AMD: sparse memory backed for the AMD driver (Mario Kart
-  World's black road and green tour movie), occlusion queries copied without waiting, and pipeline
-  builds spread over workers (the AMD driver compiles one at a time), the ones the game waits on built
-  first. It has not been tested on NVIDIA or Intel GPUs.
-- **Star Fox** boots and plays (SDK 21.4.4): the new hardware audio codec (`nn::codec::hwacod`, opened
-  through `hwopus` 100) with real Opus decoding, the Switch 2 sound mixer streams played through the
-  audio output, and about fifteen more Ampere shader forms. It still needs a small game patch for its
-  window check, see [pattex/README.md](pattex/README.md#star-fox-window-patch).
-- **Yoshi and the Mysterious Book** starts in docked mode and plays its intro (surface operations on
-  texel buffers, `SUATOM`, array gathers, a few integer forms, its GPU-only memory backed whole, and
-  streamed-in shaders, compute ones included, retried until their code has arrived). **It usually
-  crashes or hangs on a white page a few seconds after the Bowser Jr. movie** (its heap gets
-  overwritten, cause still being looked for); the first mission was black on the last run that got
-  there.
-- **The Legend of Zelda: Ocarina of Time** boots and plays on AMD: new shader forms, matrix-multiply
-  programs kept small enough for the AMD compiler, its GPU memory backed whole, the forest shadow map
-  given memory (shadows and lit rocks), faster CPU writes next to GPU data, no more single-frame white flashes (occlusion counter fix
-  from Lichii #121). **Outdoor light is still too bright and foggy** (most of the forest's vegetation
-  is culled on the GPU through pointer tables not followed yet on AMD).
-- **Kirby Air Riders**: menus, races and results render, and races now show their scenery (Selevet's
-  white-frame fixes, Lichii's title-crash and shader-stall fixes, many new shader forms); no rejected
-  shaders in a short run. The first race stutters while its shaders build.
-- **Mario Kart World**: Nemyu's fixes for the 2162-0001 title-screen abort and its stability guards,
-  and the tour movie fixed on AMD GPUs.
-- GPU memory reused at the same addresses is mapped again when its pages changed (from
-  [AMDEGL](https://github.com/Purebuilt/AMDEGL); fixes stale reads behind Mario Kart World freezes).
-- Up to date with Eglantine nx2 e736dfde9e (2026-11-05): Ocarina of Time boot fix, DK Bananza frame
-  wait, Hyrule Warriors and Pokopia shader forms, buffer cache fixes, FSR 3.1 in place of a game's DLSS;
-  and PokeDinner's Switch 2 mouse (Joy-Con 2 mouse mode).
-- Metroid Prime 4 loose RomFS dumps load, and several other fixes listed in
-  [pattex/README.md](pattex/README.md).
+Since 2026-11-08 Aubépine builds on **Lichii nx2 `92f0212408`**, which brings the community's work on
+**The Legend of Zelda: Ocarina of Time** (vegetation, fog, white flashes, the upscaler, performance,
+matrix programs on `VK_KHR_cooperative_matrix` for RDNA4) and had caught up with most of this fork's
+earlier additions (Star Fox's audio, the Switch 2 mouse, Mario Kart World and DK Bananza frame modes,
+FSR 3, loose dumps). On top of it, eight commits of ours:
+
+- **Made on an AMD Radeon.** Developed and tested on a Radeon RX 9070 XT (AMD driver, Windows); not
+  tested on NVIDIA or Intel GPUs.
+- **Ocarina of Time on AMD**: the Kokiri Forest shadow map (24576x24576) gets its memory, so shadows
+  and the lighting that depends on them work.
+- **Kirby Air Riders on AMD**: native storage buffers keep the size packed after their pointer when
+  there is one; with the upstream sizing the game lost the GPU about 90 s in.
+- **Star Fox** and **Yoshi and the Mysterious Book**: two shader forms that were still rejected.
+- The emulator shows as **Aubépine** (the executable is still `eglantine.exe`), Mario Kart World's
+  recommended-settings question can be answered once, and `EDEN_NX2_TAS_TRIGGER` for scripted tests.
+
+Details in [pattex/README.md](pattex/README.md).
 
 ## Games tested
 
@@ -69,60 +53,54 @@ Tested on Windows 11, Ryzen 7 9800X3D and Radeon RX 9070 XT, in short sessions.
 
 | Game | State |
 |---|---|
-| Star Fox | Title, intro cutscenes, training mission, sound; no rejected shaders (needs the window patch). |
-| The Legend of Zelda: Ocarina of Time | Docked, from a save: Kokiri Forest plays at ~40-55 FPS (60 indoors) with shadows, 4-5 minute runs without a crash, no white flashes. **Outdoor light still too bright and foggy**. |
-| Yoshi and the Mysterious Book | Docked: the game starts, title, intro and Bowser Jr. movie play. **A few seconds after the Bowser Jr. movie it usually aborts (2162-0001) or hangs on a white page**: about 4 runs in 5 in our tests, builds before the latest Eglantine merge included. Unreal's heap gets overwritten right after the game frees the movie's video memory; the cause is still being looked for. When it gets past that point, the first mission was still black on the last run; its rejected shaders are translated since (patches 0017-0018). |
-| Mario Kart World | Title, tour movie, races at ~40-45 FPS; no rejected shaders. One short run in two aborted during the tour movie since the latest Eglantine merge. |
-| Donkey Kong Bananza | Saves load and play; no rejected shaders; ~28 FPS since Eglantine's frame wait (`EDEN_NX2_FRAMES_AHEAD=1` for the old behaviour). |
-| Kirby Air Riders | Menus, races and results; races show their scenery, the first one stutters while shaders build; no rejected shaders in a short run. |
-| Metroid Prime 4 | 60 FPS from loose dumps. |
+| The Legend of Zelda: Ocarina of Time | 5 minutes from a save without a crash, no rejected shaders, no white flashes. Max Resolution and Dynamic FPS are built in and on by default (about 23-24 FPS at full resolution here; turn Max Resolution off in Add-Ons for speed). |
+| Kirby Air Riders | Menus and races with their scenery, no rejected shaders; the first session stutters while shaders compile. |
+| Donkey Kong Bananza | Saves load and play, no rejected shaders. |
+| Mario Kart World | Title and races, 31-54 FPS, no rejected shaders. |
+| Star Fox | Intro and training mission, no rejected shaders (needs the window patch in [pattex/star-fox](pattex/README.md#star-fox-window-patch)). |
+| Yoshi and the Mysterious Book | Starts and plays its intro, no rejected shaders; closing during the game can hang. |
+| Metroid Prime 4 | Ran at 60 FPS on our previous base; not run on this one yet. |
 
 Only play games you own and dumped yourself. No keys, firmware or game files are provided here.
 
 ## Building
 
 Follow the [General Build Guide](docs/Build.md); the default branch of this repository is `pattex`.
-A prebuilt Windows x64 build is in [Releases](https://github.com/pattex67/Aubepine/releases)
-(no keys, firmware or games included).
+Prebuilt Windows x64 builds are in [Releases](https://github.com/pattex67/Aubepine/releases) (no keys,
+firmware or games included).
 
 ## Patches
 
-[`pattex/patches/`](pattex/patches) holds every change of this fork as `git format-patch` files on top
-of PokeDinner, with what each one contains in [pattex/README.md](pattex/README.md). The Star Fox and
-Yoshi work (patches 0004 to 0006) touches only a few files and should apply to Eglantine with little
-adjustment.
+[`pattex/patches/`](pattex/patches) holds our eight commits as `git format-patch` files on top of
+Lichii nx2 `92f0212408`; [`pattex/patches-pokedinner/`](pattex/patches-pokedinner) keeps the 40
+patches of the previous PokeDinner-based version for reference.
 
 ## Credits
 
 Aubépine stands on the work of the Eden, Yuzu and Sudachi developers, Eglantine (Djihads80 and its
-contributors), PokeDinner (Franseven), Nemyu (Uesleizito Zin), Selevet Eglantine (sylvieistaken),
-MythosOfs, monkeefunnee, Purebuilt (AMDEGL) and zortos293 (Lichii). The fork's own changes were made with an AI assistant (Claude Opus 5.5).
+contributors), Lichii (zortos293 and its many contributors), PokeDinner (Franseven), Nemyu (Uesleizito
+Zin), Selevet Eglantine (sylvieistaken), MythosOfs, monkeefunnee and Purebuilt (AMDEGL). The fork's
+own changes were made with an AI assistant (Claude Opus 5.5).
 
 ## License
 
-Aubépine is licensed under the GPLv3 (or any later version), like Eglantine. Refer to the
+Aubépine is licensed under the GPLv3 (or any later version), like Eglantine and Lichii. Refer to the
 [LICENSE.txt](LICENSE.txt) file.
 
 ---
 
 ## En français
 
-**Aubépine** est un émulateur expérimental de la Nintendo Switch 2, fork d'Eglantine et de PokeDinner.
-Il est développé et testé sur une **Radeon RX 9070 XT** (pilote AMD) et plusieurs de ses correctifs
-visent les cartes AMD (mémoire « sparse », route noire et vidéo verte de Mario Kart World, requêtes
-d'occlusion, compilation des shaders) ; il n'a pas été testé sur NVIDIA ni Intel. Il regroupe des
-correctifs de plusieurs forks et ajoute son propre travail : **Star Fox** démarre et se
-joue (codec audio matériel du SDK 21, son du nouveau mixeur, nouvelles instructions de shader ; il faut
-encore un petit patch de jeu, voir [pattex/README.md](pattex/README.md)), **Yoshi et le Livre
-mystérieux** se lance en mode TV et joue son intro, mais **il plante ou reste sur une page blanche
-quelques secondes après la vidéo de Bébé Bowser** dans environ 4 essais sur 5 (sa mémoire est écrasée
-juste après que le jeu libère la mémoire de la vidéo ; cause encore recherchée), et la première mission
-était noire au dernier essai qui y est arrivé. Les courses de **Kirby** affichent maintenant leurs
-décors (la première rame pendant la compilation des shaders), et Mario Kart World, DK Bananza et
-Metroid Prime 4 profitent des correctifs regroupés. **Zelda: Ocarina of Time** démarre et se joue sur AMD
-(ombres et rochers éclairés dans la forêt Kokiri, 40-55 FPS) ; la lumière extérieure reste **trop forte
-et brumeuse** (une grande partie de la végétation n'est pas encore dessinée) ; les flashs blancs
-d'une image ont disparu. À jour avec Eglantine nx2 e736dfde9e (5 novembre). Testé sur Windows 11 avec une Radeon RX 9070 XT. Une version
-compilée pour Windows est dans les [Releases](https://github.com/pattex67/Aubepine/releases) ; pour
-compiler soi-même, suivre [docs/Build.md](docs/Build.md) sur la branche `pattex`. Ne jouez qu'à des jeux que vous
-possédez et avez extraits vous-même : aucun fichier de jeu, clé ou firmware n'est fourni.
+**Aubépine** est un émulateur expérimental de la Nintendo Switch 2, réglé sur une **Radeon RX 9070 XT**
+(pilote AMD ; pas testé sur NVIDIA ni Intel). Depuis le 8 novembre 2026 il repose sur **Lichii**
+(fork d'Eglantine), qui apporte tout le travail de la communauté sur **Zelda: Ocarina of Time**
+(végétation, brouillard, flashs, performances, calcul matriciel RDNA4) et avait déjà repris l'essentiel
+de nos anciens ajouts. Aubépine y ajoute huit correctifs : la carte d'ombres de la forêt Kokiri sur AMD,
+la taille des buffers qui évite à **Kirby** de perdre le GPU, deux instructions de shader pour
+**Star Fox** et **Yoshi**, le nom Aubépine, la question de Mario Kart World mémorisée et un outil de
+test. Les six jeux testés (Zelda, Kirby, DK Bananza, Mario Kart World, Star Fox, Yoshi) tournent sans
+shader refusé dans nos essais courts ; Zelda tourne en pleine résolution (patch « Max Resolution »
+intégré, à désactiver dans les Add-Ons pour gagner des FPS). Une version compilée pour Windows est dans
+les [Releases](https://github.com/pattex67/Aubepine/releases) ; pour compiler soi-même, suivre
+[docs/Build.md](docs/Build.md) sur la branche `pattex`. Ne jouez qu'à des jeux que vous possédez et
+avez extraits vous-même : aucun fichier de jeu, clé ou firmware n'est fourni.
