@@ -642,6 +642,9 @@ struct Values {
                                                          Specialization::Countable,
                                                          true,
                                                          true};
+    SwitchableSetting<bool> use_vulkan_pipeline_binaries{
+        linkage, true, "use_vulkan_pipeline_binaries", Category::RendererAdvanced,
+        Specialization::Default};
 
     SwitchableSetting<bool> enable_compute_pipelines{linkage, false, "enable_compute_pipelines",
                                                      Category::RendererAdvanced};
