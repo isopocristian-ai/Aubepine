@@ -23,6 +23,7 @@ public:
         : ServiceFramework{system_, "nx2:aud:u"} {
         // clang-format off
         static const FunctionInfo functions[] = {
+            {0, &INx2AudioUserClient::GetAudioInManager, "GetAudioInManager"},
             {1, &INx2AudioUserClient::GetAudioOutManager, "GetAudioOutManager (guessed)"},
             {2, &INx2AudioUserClient::GetAudioRendererManager, "GetAudioRendererManager (guessed)"},
         };
@@ -31,10 +32,17 @@ public:
     }
 
 private:
-    // nn::audio::OpenAudioOut keeps the command 1 object as a singleton and calls its method 3
-    // (OpenAudioOutAuto: 48 kHz stereo parameters, device name in/out buffers).
+    void GetAudioInManager(HLERequestContext& ctx) {
+        IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+        rb.Push(ResultSuccess);
+        rb.PushIpcInterface<IAudioInManager>(ctx, system);
+    }
+
     void GetAudioOutManager(HLERequestContext& ctx) {
-        LOG_WARNING(Service_Audio, "(STUBBED) Switch 2 aud:u 1, returning IAudioOutManager");
+        IPC::RequestParser rp{ctx};
+        const u32 arg = rp.Pop<u32>();
+        LOG_WARNING(Service_Audio, "(STUBBED) Switch 2 aud:u 1 arg={}, returning IAudioOutManager",
+                    arg);
         IPC::ResponseBuilder rb{ctx, 2, 0, 1};
         rb.Push(ResultSuccess);
         rb.PushIpcInterface<IAudioOutManager>(ctx, system);

@@ -248,6 +248,16 @@ Id EmitStorageAtomicExchange32(EmitContext& ctx, const IR::Value& binding, const
     return StorageAtomicU32(ctx, binding, offset, value, &Sirit::Module::OpAtomicExchange);
 }
 
+/// Stores value if the storage word equals comparator; returns the old word.
+Id EmitStorageAtomicCompareExchange32(EmitContext& ctx, const IR::Value& binding,
+                                      const IR::Value& offset, Id comparator, Id value) {
+    const Id pointer{StoragePointer(ctx, ctx.storage_types.U32, &StorageDefinitions::U32, binding,
+                                    offset, sizeof(u32))};
+    const auto [scope, semantics]{AtomicArgs(ctx)};
+    return ctx.OpAtomicCompareExchange(ctx.U32[1], pointer, scope, semantics, semantics, value,
+                                       comparator);
+}
+
 Id EmitStorageAtomicIAdd64(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset,
                            Id value) {
     return StorageAtomicU64(ctx, binding, offset, value, &Sirit::Module::OpAtomicIAdd,
@@ -418,59 +428,75 @@ Id EmitStorageAtomicMaxF32x2(EmitContext& ctx, const IR::Value& binding, const I
 }
 
 namespace {
-// Atomics on untracked global memory go through a helper that finds the storage buffer holding
-// the address, like global loads and stores (Ocarina of Time's culling computes use them).
-// After zortos293/Lichii #87, which routes IAdd and UMax the same way.
-Id GlobalAtomic32(EmitContext& ctx, Id function, Id address, Id value) {
-    if (!Sirit::ValidId(function)) {
-        throw NotImplementedException("Global atomic with no storage buffer to route it to");
+/// A 32-bit global atomic through its routing function (EmitContext::DefineGlobalMemoryFunctions).
+Id GlobalAtomic(EmitContext& ctx, EmitContext::GlobalAtomic kind, Id type, const IR::Value& address,
+                Id value) {
+    if (!ctx.profile.support_int64) {
+        throw NotImplementedException("Global atomic addressing requires 64-bit integers");
     }
-    return ctx.OpFunctionCall(ctx.U32[1], function, address, value);
+    const Id function{ctx.global_atomic_funcs[static_cast<size_t>(kind)]};
+    if (!Sirit::ValidId(function)) {
+        throw NotImplementedException("Global atomic with no routable storage buffer");
+    }
+    return ctx.OpFunctionCall(type, function, ctx.Def(address), value);
 }
 } // Anonymous namespace
 
-Id EmitGlobalAtomicIAdd32(EmitContext& ctx, Id address, Id value) {
-    return GlobalAtomic32(ctx, ctx.global_atomic_funcs_u32[GLOBAL_ATOMIC_IADD], address, value);
+Id EmitGlobalAtomicIAdd32(EmitContext& ctx, const IR::Value& address, Id value) {
+    return GlobalAtomic(ctx, EmitContext::GlobalAtomic::IAdd, ctx.U32[1], address, value);
 }
 
-Id EmitGlobalAtomicSMin32(EmitContext& ctx, Id address, Id value) {
-    return GlobalAtomic32(ctx, ctx.global_atomic_funcs_u32[GLOBAL_ATOMIC_SMIN], address, value);
+Id EmitGlobalAtomicSMin32(EmitContext& ctx, const IR::Value& address, Id value) {
+    return GlobalAtomic(ctx, EmitContext::GlobalAtomic::SMin, ctx.U32[1], address, value);
 }
 
-Id EmitGlobalAtomicUMin32(EmitContext& ctx, Id address, Id value) {
-    return GlobalAtomic32(ctx, ctx.global_atomic_funcs_u32[GLOBAL_ATOMIC_UMIN], address, value);
+Id EmitGlobalAtomicUMin32(EmitContext& ctx, const IR::Value& address, Id value) {
+    return GlobalAtomic(ctx, EmitContext::GlobalAtomic::UMin, ctx.U32[1], address, value);
 }
 
-Id EmitGlobalAtomicSMax32(EmitContext& ctx, Id address, Id value) {
-    return GlobalAtomic32(ctx, ctx.global_atomic_funcs_u32[GLOBAL_ATOMIC_SMAX], address, value);
+Id EmitGlobalAtomicSMax32(EmitContext& ctx, const IR::Value& address, Id value) {
+    return GlobalAtomic(ctx, EmitContext::GlobalAtomic::SMax, ctx.U32[1], address, value);
 }
 
-Id EmitGlobalAtomicUMax32(EmitContext& ctx, Id address, Id value) {
-    return GlobalAtomic32(ctx, ctx.global_atomic_funcs_u32[GLOBAL_ATOMIC_UMAX], address, value);
+Id EmitGlobalAtomicUMax32(EmitContext& ctx, const IR::Value& address, Id value) {
+    return GlobalAtomic(ctx, EmitContext::GlobalAtomic::UMax, ctx.U32[1], address, value);
 }
 
-Id EmitGlobalAtomicInc32(EmitContext&) {
-    throw NotImplementedException("SPIR-V Instruction");
+Id EmitGlobalAtomicInc32(EmitContext& ctx, const IR::Value& address, Id value) {
+    return GlobalAtomic(ctx, EmitContext::GlobalAtomic::Inc, ctx.U32[1], address, value);
 }
 
-Id EmitGlobalAtomicDec32(EmitContext&) {
-    throw NotImplementedException("SPIR-V Instruction");
+Id EmitGlobalAtomicDec32(EmitContext& ctx, const IR::Value& address, Id value) {
+    return GlobalAtomic(ctx, EmitContext::GlobalAtomic::Dec, ctx.U32[1], address, value);
 }
 
-Id EmitGlobalAtomicAnd32(EmitContext& ctx, Id address, Id value) {
-    return GlobalAtomic32(ctx, ctx.global_atomic_funcs_u32[GLOBAL_ATOMIC_AND], address, value);
+Id EmitGlobalAtomicAnd32(EmitContext& ctx, const IR::Value& address, Id value) {
+    return GlobalAtomic(ctx, EmitContext::GlobalAtomic::And, ctx.U32[1], address, value);
 }
 
-Id EmitGlobalAtomicOr32(EmitContext& ctx, Id address, Id value) {
-    return GlobalAtomic32(ctx, ctx.global_atomic_funcs_u32[GLOBAL_ATOMIC_OR], address, value);
+Id EmitGlobalAtomicOr32(EmitContext& ctx, const IR::Value& address, Id value) {
+    return GlobalAtomic(ctx, EmitContext::GlobalAtomic::Or, ctx.U32[1], address, value);
 }
 
-Id EmitGlobalAtomicXor32(EmitContext& ctx, Id address, Id value) {
-    return GlobalAtomic32(ctx, ctx.global_atomic_funcs_u32[GLOBAL_ATOMIC_XOR], address, value);
+Id EmitGlobalAtomicXor32(EmitContext& ctx, const IR::Value& address, Id value) {
+    return GlobalAtomic(ctx, EmitContext::GlobalAtomic::Xor, ctx.U32[1], address, value);
 }
 
-Id EmitGlobalAtomicExchange32(EmitContext& ctx, Id address, Id value) {
-    return GlobalAtomic32(ctx, ctx.global_atomic_funcs_u32[GLOBAL_ATOMIC_EXCHANGE], address, value);
+Id EmitGlobalAtomicExchange32(EmitContext& ctx, const IR::Value& address, Id value) {
+    return GlobalAtomic(ctx, EmitContext::GlobalAtomic::Exchange, ctx.U32[1], address, value);
+}
+
+/// Global compare-exchange through the routing function; returns the old word.
+Id EmitGlobalAtomicCompareExchange32(EmitContext& ctx, const IR::Value& address, Id comparator,
+                                     Id value) {
+    if (!ctx.profile.support_int64) {
+        throw NotImplementedException("Global atomic addressing requires 64-bit integers");
+    }
+    if (!Sirit::ValidId(ctx.atomic_cas_global_func_u32)) {
+        throw NotImplementedException("Global atomic compare-exchange with no routable storage buffer");
+    }
+    return ctx.OpFunctionCall(ctx.U32[1], ctx.atomic_cas_global_func_u32, ctx.Def(address),
+                              comparator, value);
 }
 
 Id EmitGlobalAtomicIAdd64(EmitContext&) {
@@ -561,8 +587,8 @@ Id EmitGlobalAtomicExchange32x2(EmitContext&) {
     throw NotImplementedException("SPIR-V Instruction");
 }
 
-Id EmitGlobalAtomicAddF32(EmitContext&) {
-    throw NotImplementedException("SPIR-V Instruction");
+Id EmitGlobalAtomicAddF32(EmitContext& ctx, const IR::Value& address, Id value) {
+    return GlobalAtomic(ctx, EmitContext::GlobalAtomic::AddF32, ctx.F32[1], address, value);
 }
 
 Id EmitGlobalAtomicAddF16x2(EmitContext&) {

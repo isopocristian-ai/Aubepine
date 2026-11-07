@@ -117,8 +117,7 @@ constexpr Common::MemoryPermission ConvertToMemoryPermission(KMemoryPermission p
     if (True(perm & KMemoryPermission::UserWrite)) {
         perms |= Common::MemoryPermission::Write;
     }
-#if defined(HAS_NCE) || defined(HAS_HYPERVISOR)
-    // Native execution (NCE, or Hypervisor.framework on macOS) needs code pages executable.
+#ifdef HAS_NCE
     if (True(perm & KMemoryPermission::UserExecute)) {
         perms |= Common::MemoryPermission::Execute;
     }
@@ -202,7 +201,7 @@ Result KPageTableBase::InitializeForKernel(bool is_64_bit, KVirtualAddress start
                                                m_memory_block_slab_manager));
 }
 
-Result KPageTableBase::InitializeForProcess(Svc::CreateProcessFlag as_type, bool enable_aslr, bool enable_das_merge, bool from_back, KMemoryManager::Pool pool, KProcessAddress code_address, size_t code_size, KSystemResource* system_resource, KResourceLimit* resource_limit, Core::Memory::Memory& memory, KProcessAddress aslr_space_start, size_t extra_heap_region_size) {
+Result KPageTableBase::InitializeForProcess(Svc::CreateProcessFlag as_type, bool enable_aslr, bool enable_das_merge, bool from_back, KMemoryManager::Pool pool, KProcessAddress code_address, size_t code_size, KSystemResource* system_resource, KResourceLimit* resource_limit, Core::Memory::Memory& memory, KProcessAddress aslr_space_start) {
     // Calculate region extents.
     const size_t as_width = GetAddressSpaceWidth(as_type);
     const KProcessAddress start = 0;
@@ -240,7 +239,7 @@ Result KPageTableBase::InitializeForProcess(Svc::CreateProcessFlag as_type, bool
     size_t kernel_map_region_size;
     if (m_address_space_width == 39) {
         alias_region_size = GetSpaceSize(KAddressSpaceInfo::Type::Alias);
-        heap_region_size = GetSpaceSize(KAddressSpaceInfo::Type::Heap) + extra_heap_region_size;
+        heap_region_size = GetSpaceSize(KAddressSpaceInfo::Type::Heap);
         stack_region_size = GetSpaceSize(KAddressSpaceInfo::Type::Stack);
         kernel_map_region_size = GetSpaceSize(KAddressSpaceInfo::Type::MapSmall);
         m_code_region_start = m_address_space_start + aslr_space_start +
@@ -2156,10 +2155,8 @@ Result KPageTableBase::SetHeapSize(KProcessAddress* out, size_t size) {
 
         // Validate that setting heap size is possible at all.
         R_UNLESS(!m_is_kernel, ResultOutOfMemory);
-        if (m_max_heap_size <= static_cast<size_t>(m_heap_region_end - m_heap_region_start)) {
-            R_UNLESS(size <= static_cast<size_t>(m_heap_region_end - m_heap_region_start),
-                     ResultOutOfMemory);
-        }
+        R_UNLESS(size <= static_cast<size_t>(m_heap_region_end - m_heap_region_start),
+                 ResultOutOfMemory);
         R_UNLESS(size <= m_max_heap_size, ResultOutOfMemory);
 
         if (size < static_cast<size_t>(m_current_heap_end - m_heap_region_start)) {

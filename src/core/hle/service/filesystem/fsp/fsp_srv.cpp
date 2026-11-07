@@ -556,15 +556,6 @@ Result FSP_SRV::OpenDataStorageWithProgramIndex(OutInterface<IStorage> out_inter
     auto patched_romfs = romfs_controller->OpenPatchedRomFSWithProgramIndex(
         program_id, program_index, FileSys::ContentRecordType::Program);
 
-    if (!patched_romfs && program_index == 0) {
-        // A game run from loose files has no NCA for the content provider to find: its own RomFS
-        // is the current process's. Metroid Prime 4 reads it this way at boot.
-        if (!romfs) {
-            romfs = romfs_controller->OpenRomFSCurrentProcess();
-        }
-        patched_romfs = romfs;
-    }
-
     if (!patched_romfs) {
         // TODO: Find the right error code to use here
         LOG_ERROR(Service_FS, "Could not open storage with program_index={}", program_index);

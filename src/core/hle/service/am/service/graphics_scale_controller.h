@@ -36,10 +36,10 @@ private:
         R_SUCCEED();
     }
 
-    // nn::oe::SetGraphicsScaleChangedNotificationEnabled(bool): proxy slot 10, a u8 in and only a
-    // result out. The scale never changes here, so there is no notification to enable.
+    // nn::oe::SetGraphicsScaleChangedNotificationEnabled(bool). The scale never changes here, so
+    // there is nothing to notify.
     Result SetGraphicsScaleChangedNotificationEnabled(bool enabled) {
-        LOG_DEBUG(Service_AM, "called, enabled={}", enabled);
+        LOG_INFO(Service_AM, "called, enabled={}", enabled);
         R_SUCCEED();
     }
 };

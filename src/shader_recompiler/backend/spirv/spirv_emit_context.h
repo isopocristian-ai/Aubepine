@@ -7,10 +7,9 @@
 #pragma once
 
 #include <array>
-#include <bit>
+#include <optional>
 
 #include <sirit/sirit.h>
-#include "common/container/unordered_map.h"
 #include "common/container/unordered_set.h"
 
 #include "shader_recompiler/backend/bindings.h"
@@ -164,16 +163,12 @@ struct GenericElementInfo {
     u32 num_components{};
 };
 
-enum GlobalAtomicOp : size_t {
-    GLOBAL_ATOMIC_IADD,
-    GLOBAL_ATOMIC_SMIN,
-    GLOBAL_ATOMIC_UMIN,
-    GLOBAL_ATOMIC_SMAX,
-    GLOBAL_ATOMIC_UMAX,
-    GLOBAL_ATOMIC_AND,
-    GLOBAL_ATOMIC_OR,
-    GLOBAL_ATOMIC_XOR,
-    GLOBAL_ATOMIC_EXCHANGE,
+struct CooperativeHmmaTypes {
+    Id float16{};
+    Id float16x2{};
+    Id matrix_a{};
+    Id matrix_b{};
+    Id matrix_c{};
 };
 
 class EmitContext final : public Sirit::Module {
@@ -187,8 +182,15 @@ public:
     [[nodiscard]] Id BitOffset8(const IR::Value& offset);
     [[nodiscard]] Id BitOffset16(const IR::Value& offset);
 
+    /// Whether this stage has subgroup operations. Mesh emulation runs task and mesh programs
+    /// as compute shaders, so they have what compute shaders have.
+    [[nodiscard]] bool SupportsSubgroups() const {
+        return profile.SupportsSubgroupStage(runtime_info.mesh_as_compute ? Stage::Compute
+                                                                          : stage);
+    }
+
     Id Const(u32 value) {
-        return CachedConstant(u32_constants, U32[1], value, value);
+        return Constant(U32[1], value);
     }
 
     Id Const(u32 element_1, u32 element_2) {
@@ -222,23 +224,13 @@ public:
     }
 
     Id Const(f32 value) {
-        return CachedConstant(f32_constants, F32[1], std::bit_cast<u32>(value), value);
-    }
-
-    /// Sirit deduplicates constants, but by hashing a freshly allocated copy of their words on
-    /// every call; immediates are emitted over and over, so remember the ids of scalar constants.
-    /// Keys are bit patterns, like Sirit's (0.0f and -0.0f stay distinct).
-    template <typename T>
-    Id CachedConstant(::Common::unordered_map<u32, Id>& cache, Id type, u32 bits, T value) {
-        const auto [it, is_new]{cache.try_emplace(bits)};
-        if (is_new) {
-            it->second = Constant(type, value);
-        }
-        return it->second;
+        return Constant(F32[1], value);
     }
 
     const Profile& profile;
     const RuntimeInfo& runtime_info;
+    const bool requires_coherent_global_memory;
+    const bool requires_coherent_image_memory;
     Stage stage{};
 
     Id void_id{};
@@ -253,9 +245,6 @@ public:
     VectorTypes S32;
     VectorTypes F16;
     VectorTypes F64;
-
-    ::Common::unordered_map<u32, Id> u32_constants;
-    ::Common::unordered_map<u32, Id> f32_constants;
 
     Id true_value{};
     Id false_value{};
@@ -335,9 +324,6 @@ public:
     u32 texture_rescaling_index{};
     u32 image_rescaling_index{};
 
-    Id mesh_draw_base_push_constant{};
-    u32 mesh_draw_base_member_index{};
-
     Id render_area_push_constant{};
     u32 render_are_member_index{};
 
@@ -369,14 +355,18 @@ public:
 
     Id write_storage_cas_loop_func{};
 
-    // Indexed by GLOBAL_ATOMIC_*: helpers for 32-bit atomics on untracked global memory.
-    std::array<Id, 9> global_atomic_funcs_u32{};
     Id load_global_func_u32{};
     Id load_global_func_u32x2{};
     Id load_global_func_u32x4{};
     Id write_global_func_u32{};
     Id write_global_func_u32x2{};
     Id write_global_func_u32x4{};
+    // 32-bit global atomics on untracked addresses, routed to the storage buffer holding them.
+    enum class GlobalAtomic : size_t {
+        IAdd, SMin, UMin, SMax, UMax, Inc, Dec, And, Or, Xor, Exchange, AddF32, Count,
+    };
+    std::array<Id, static_cast<size_t>(GlobalAtomic::Count)> global_atomic_funcs{};
+    Id atomic_cas_global_func_u32{};
 
     bool need_input_position_indirect{};
     Id input_position{};
@@ -394,6 +384,12 @@ public:
     Id sample_mask{};
     Id frag_depth{};
 
+    std::array<Id, 2> software_matrix_functions{};
+    std::optional<CooperativeHmmaTypes> cooperative_hmma; ///< Set when a program lowers HMMA to it
+    /// Set when HMMA runs on 16x16x16 matrices: each 32-lane subgroup owns 384 words of shared
+    /// memory from this word (A, B and C/D tiles of 16x16 fp16, 128 words each).
+    std::optional<u32> tensor_scratch_word;
+    Id tensor_subgroup_id{};
     std::vector<Id> interfaces;
     std::vector<std::pair<u32, spv::Op>> opcode_rewrites;
 
@@ -413,6 +409,7 @@ public:
     Id mesh_primitive_count{};
     Id mesh_shared_u32{};   ///< pointer type to one workgroup word
     Id mesh_primitive_indices{};
+    Id mesh_point_size{}; ///< PointSize output array of a mesh program, if any
     MeshInfo mesh_info{};
     u32 mesh_threads{};
     u32 mesh_attribute_words{};
@@ -422,6 +419,16 @@ public:
     std::vector<MeshLineTarget> mesh_primitive_targets;
     std::array<Id, 2> mesh_outputs_marker{};
     std::array<Id, 4> mesh_tasks_marker{};
+    /// Mesh emulation (RuntimeInfo::mesh_as_compute): the output storage buffer and the
+    /// pointer type to one of its words.
+    Id mesh_output_buffer{};
+    Id mesh_output_u32{};
+    // With a task program: its payload, offset and argument buffers (RuntimeInfo), and the mesh
+    // workgroup's index within its task (what the mesh program reads at input address 0).
+    Id mesh_task_payload_buffer{};
+    Id mesh_task_offsets_buffer{};
+    Id mesh_task_args_buffer{};
+    Id mesh_group_index{};
 
     Id load_const_func_u8{};
     Id load_const_func_u16{};
@@ -459,13 +466,11 @@ private:
     void DefineRescalingInputPushConstant();
     void DefineRescalingInputUniformConstant();
     void DefineRenderArea(const Info& info);
-    void DefineMeshDrawBase();
-    [[nodiscard]] bool UsesMeshDrawBase() const;
-    [[nodiscard]] u32 MeshDrawBaseOffset() const;
 
     void DefineInputs(const IR::Program& program);
     void DefineOutputs(const IR::Program& program);
     void DefineMesh(const IR::Program& program);
+    void DefineMeshEmulationOutput();
 };
 
 } // namespace Shader::Backend::SPIRV

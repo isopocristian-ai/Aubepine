@@ -42,13 +42,10 @@ void SHR(TranslatorVisitor& v, u64 insn, const IR::U32& shift) {
         const IR::U32 zero{v.ir.Imm32(0)};
         const IR::U32 safe_bits{v.ir.Imm32(32)};
 
-        // Shifts of 32 and more: zero for a logical shift, the sign of the source for an
-        // arithmetic one. The result of an oversized host shift is undefined, so its sign
-        // can't decide it (a logical shift could come out as -1). After zortos293/Lichii #87.
         const IR::U1 is_safe{v.ir.ILessThan(shift, safe_bits, false)};
-        const IR::U32 clamped_value{shr.is_signed == 1
-                                        ? IR::U32{v.ir.ShiftRightArithmetic(base, v.ir.Imm32(31))}
-                                        : zero};
+        const IR::U32 clamped_value{shr.is_signed != 0
+                                       ? IR::U32{v.ir.ShiftRightArithmetic(base, v.ir.Imm32(31))}
+                                       : zero};
         result = IR::U32{v.ir.Select(is_safe, result, clamped_value)};
     }
     v.X(shr.dest_reg, result);

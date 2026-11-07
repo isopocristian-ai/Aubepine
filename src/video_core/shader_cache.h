@@ -8,14 +8,12 @@
 
 #include <array>
 #include <atomic>
-#include <chrono>
 #include <exception>
 #include <memory>
 #include <mutex>
 #include <span>
-#include <unordered_map>
+#include "video_core/page_filter.h"
 #include "common/container/unordered_map.h"
-#include "shader_recompiler/exception.h"
 #include <utility>
 #include <vector>
 
@@ -64,6 +62,9 @@ class ShaderCache : public VideoCommon::ChannelSetupCaches<VideoCommon::ChannelI
     };
 
 public:
+    /// Device pages this cache ever registered objects on (InnerInvalidation skips the rest).
+    VideoCommon::PageFilter page_filter;
+
     /// @brief Removes shaders inside a given region
     /// @note Checks for ranges
     /// @param addr Start address of the invalidation
@@ -80,6 +81,11 @@ public:
     /// @brief Flushes delayed removal operations
     void SyncGuestHost();
 
+    /// Drops the native programs the debug server rejects so their next draw or dispatch lowers
+    /// them again (and fails); after an un-reject, forgets every rejection so they are retried.
+    /// Runs on the thread that owns the cache, between frames.
+    void RefreshDebugRejections(bool unrejected);
+
 protected:
     struct GraphicsEnvironments {
         std::array<GraphicsEnvironment, NUM_PROGRAMS> envs;
@@ -90,8 +96,7 @@ protected:
         }
     };
 
-    explicit ShaderCache(Tegra::MaxwellDeviceMemoryManager& device_memory,
-                         bool native_tensor_full_by_default_ = false);
+    explicit ShaderCache(Tegra::MaxwellDeviceMemoryManager& device_memory);
 
     /// @brief Update the hashes and information of shader stages
     /// @param unique_hashes Shader hashes to store into when a stage is enabled
@@ -108,9 +113,6 @@ protected:
 
     std::array<const ShaderInfo*, NUM_PROGRAMS> shader_infos{};
     bool last_shaders_valid = false;
-
-    Tegra::MaxwellDeviceMemoryManager& device_memory;
-    bool native_tensor_full_by_default = false;
 
 private:
     friend struct ShaderCacheTestAccess;
@@ -164,18 +166,10 @@ private:
     bool IsRejected(VAddr addr);
     /// Remembers the exception being handled as this address's rejection.
     void RememberRejection(VAddr addr);
-    /// Whether a failed capture may be a program still being uploaded, to try again later.
-    bool RetryLater(VAddr addr, const Shader::Exception& error);
-    /// Whether such a capture failed less than 100 ms ago.
-    bool TriedRecently(VAddr addr);
-    /// Failed captures of programs that may still be uploading, per program address.
-    struct CaptureRetry {
-        std::chrono::steady_clock::time_point first{};
-        std::chrono::steady_clock::time_point last{};
-    };
-    static std::unordered_map<VAddr, CaptureRetry>& CaptureRetries();
     /// Hash of the state task and mesh programs are translated with.
     u64 MeshStateHash() const;
+
+    Tegra::MaxwellDeviceMemoryManager& device_memory;
 
     mutable std::mutex lookup_mutex;
     std::mutex invalidation_mutex;

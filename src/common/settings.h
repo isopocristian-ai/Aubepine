@@ -64,6 +64,7 @@ SETTING(std::string, false);
 SETTING(u16, false);
 SWITCHABLE(AnisotropyMode, true);
 SWITCHABLE(AntiAliasing, false);
+SWITCHABLE(OotAntiAliasing, false);
 SWITCHABLE(AspectRatio, true);
 SWITCHABLE(AstcDecodeMode, true);
 SWITCHABLE(AstcRecompression, true);
@@ -200,6 +201,9 @@ struct Values {
                                      linkage, false, "audio_muted", Category::Audio, Specialization::Default, true, true};
     Setting<bool, false> dump_audio_commands{
                                              linkage, false, "dump_audio_commands", Category::Audio, Specialization::Default, false};
+
+    Setting<u16, true> microphone_volume{linkage, 100, 0, 200, "microphone_volume",
+                                        Category::Controls};
 
     // Core
     SwitchableSetting<bool> use_multi_core{linkage, true, "use_multi_core", Category::Core};
@@ -357,6 +361,18 @@ struct Values {
                                                   true,
                                                   true};
 
+    // Lichii: caps how often the game's own compositor presents, so the game itself is paced to
+    // this rate instead of only the display. 0 keeps the game's vblank and swap interval.
+    SwitchableSetting<u32, true> fps_limit{linkage,
+                                           0,
+                                           0,
+                                           480,
+                                           "fps_limit",
+                                           Category::Renderer,
+                                           Specialization::Countable,
+                                           true,
+                                           true};
+
     SwitchableSetting<ScalingFilter> scaling_filter{linkage,
                                                     ScalingFilter::ScaleForce,
                                                     "scaling_filter",
@@ -364,6 +380,10 @@ struct Values {
                                                     Specialization::Default,
                                                     true,
                                                     true};
+    // A Switch 2 game's own DLSS network (translated) in place of AMD FSR 3.1, where it runs and
+    // its output passes the checks.
+    SwitchableSetting<bool> game_dlss_network{linkage, false, "game_dlss_network",
+                                              Category::Renderer};
     SwitchableSetting<int, true> fsr_sharpening_slider{linkage,
 #ifdef __ANDROID__
                                                        0,
@@ -395,6 +415,10 @@ struct Values {
                                                   Specialization::Default,
                                                   true,
                                                   true};
+    // The Legend of Zelda: Ocarina of Time's own anti-aliasing network and its sharpening output
+    // pass, or the tonemapped image as the game renders it (video_core/oot_network.h).
+    SwitchableSetting<OotAntiAliasing> oot_anti_aliasing{linkage, OotAntiAliasing::Game,
+                                                         "oot_anti_aliasing", Category::Renderer};
 
     SwitchableSetting<std::string> post_shader_chain{linkage,
                                                      std::string(),
@@ -512,10 +536,12 @@ struct Values {
     SwitchableSetting<u8, false> bg_blue{
                                          linkage, 0, "bg_blue", Category::Renderer, Specialization::Default, true, true};
 
-    // Low by default: the accurate path (High) leaves the mission world black and the dialogue box
-    // flickering in Splatoon Raiders, and the same stale reads show up in other Switch 2 titles.
     SwitchableSetting<GpuAccuracy, true> gpu_accuracy{linkage,
+#ifdef __ANDROID__
                                                       GpuAccuracy::Low,
+#else
+                                                      GpuAccuracy::High,
+#endif
                                                       "gpu_accuracy",
                                                       Category::RendererAdvanced,
                                                       Specialization::Default,
@@ -599,23 +625,34 @@ struct Values {
         linkage, true, "use_vulkan_driver_pipeline_cache", Category::RendererAdvanced,
         Specialization::Default};
 
+    SwitchableSetting<NativeAsyncDraws> native_async_draws{linkage,
+                                                           NativeAsyncDraws::Wait,
+                                                           "native_async_draws",
+                                                           Category::RendererAdvanced,
+                                                           Specialization::Default,
+                                                           true,
+                                                           true};
+
+    SwitchableSetting<u32, true> native_pipeline_wait_ms{linkage,
+                                                         8,
+                                                         1,
+                                                         100,
+                                                         "native_pipeline_wait_ms",
+                                                         Category::RendererAdvanced,
+                                                         Specialization::Countable,
+                                                         true,
+                                                         true};
+
     SwitchableSetting<bool> enable_compute_pipelines{linkage, false, "enable_compute_pipelines",
                                                      Category::RendererAdvanced};
 
     SwitchableSetting<bool> use_video_framerate{linkage, false, "use_video_framerate",
                                                 Category::RendererAdvanced};
 
-    // Mario Kart World: keep the game in its own 30 fps mode (loader/nso.cpp).
+    // Mario Kart World: select a fixed or dynamic in-game frame-rate mode (loader/nso.cpp).
     SwitchableSetting<bool> mkw_30fps{linkage, false, "mkw_30fps", Category::RendererAdvanced};
-    // Mario Kart World: the game's own dynamic frame rate, timed on the whole frame (nso.cpp),
-    // with presents paced to every vblank (nx2_gsv.h). Takes precedence over mkw_30fps.
     SwitchableSetting<bool> mkw_dynamic_fps{linkage, false, "mkw_dynamic_fps",
                                             Category::RendererAdvanced};
-    // Experimental: let the game run two frames ahead of the GPU thread at 30 fps (nx2_gsv.h).
-    SwitchableSetting<bool> mkw_smooth{linkage, false, "mkw_smooth", Category::RendererAdvanced};
-
-    // Donkey Kong Bananza: lock its frame rate controller to 30 fps (loader/nso.cpp).
-    SwitchableSetting<bool> dk_30fps{linkage, false, "dk_30fps", Category::RendererAdvanced};
 
     SwitchableSetting<bool> use_reactive_flushing{linkage,
 #ifdef __ANDROID__
@@ -700,6 +737,9 @@ struct Values {
 
     SwitchableSetting<bool> gpu_unswizzle_enabled{linkage, false, "gpu_unswizzle_enabled",
                                                   Category::RendererHacks};
+
+    SwitchableSetting<bool> pin_gpu_threads{linkage, false, "pin_gpu_threads",
+                                            Category::RendererHacks};
 
     SwitchableSetting<ExtendedDynamicState> dyna_state{linkage,
 #if defined(__ANDROID__)

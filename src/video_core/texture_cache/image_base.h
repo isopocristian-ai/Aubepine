@@ -109,11 +109,6 @@ struct ImageBase {
     u32 converted_size_bytes = 0;
     u32 scale_rating = 0;
     u32 host_level_offset = 0; ///< Guest mip level held by host mip 0 (see TrimmedLevels).
-    /// Pages (from the image's first page) the CPU wrote while the rest of a large image stays
-    /// tracked; they are re-uploaded alone (partial refresh) and are untracked until then.
-    std::vector<u32> partial_dirty_pages;
-    /// Byte ranges (from the image start) whose GPU mapping changed; re-uploaded like the pages.
-    std::vector<std::pair<u64, u64>> partial_remapped;
     /// Large layered images uploaded by layer: one bit per layer written since the last upload
     /// while CpuModified. Empty while CpuModified means the whole image.
     std::vector<u64> dirty_layers;
@@ -123,7 +118,9 @@ struct ImageBase {
     u64 scale_tick = 0;
     bool has_scaled = false;
 
+    /// The channel and GPU address space whose page table RegisterImage put the image in.
     size_t channel = 0;
+    size_t address_space = 0;
 
     ImageFlagBits flags = ImageFlagBits::CpuModified;
 

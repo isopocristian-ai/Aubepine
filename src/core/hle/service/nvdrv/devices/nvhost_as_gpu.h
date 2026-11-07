@@ -233,8 +233,6 @@ private:
 
     // Switch 2: maps GPU-accessible process memory (CPU range) at a GPU address.
     void Nx2Map(u64 gpu_address, u64 cpu_address, u64 size);
-    void Nx2RefreshDeviceRange(DAddr device_address, u64 cpu_address, u64 size,
-                               NvCore::Session& session);
     void Nx2Unmap(u64 gpu_address, u64 size);
     NvCore::SessionId nx2_session{};
     struct Nx2DeviceRange {

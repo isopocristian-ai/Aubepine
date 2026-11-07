@@ -7,7 +7,12 @@
 #include <chrono>
 #include <thread>
 
+#ifdef __linux__
+#include <sys/prctl.h>
+#endif
+
 #include "common/assert.h"
+#include "common/dkb_cpu_trace.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
 #include "common/thread.h"
@@ -48,8 +53,17 @@ ThreadManager::~ThreadManager() = default;
 void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Frontend::GraphicsContext& context, Tegra::Control::Scheduler& scheduler) {
     rasterizer = renderer.ReadRasterizer();
     thread = std::jthread([&](std::stop_token stop_token) {
+        const Common::DkbCpuTrace::Registration cpu_trace{Common::DkbCpuTrace::Role::GpuCommand};
         Common::SetCurrentThreadName("GPU");
+#ifdef __linux__
+        // The pending-channel polls below sleep 50 us; the default timer slack adds up to 50 more.
+        prctl(PR_SET_TIMERSLACK, 1UL, 0, 0, 0);
+#endif
         Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
+        Common::SetCurrentThreadToPerformanceCores();
+        if (Settings::values.pin_gpu_threads.GetValue()) {
+            Common::PinCurrentThread(Common::PinnedRole::GpuFront);
+        }
         system.RegisterHostThread();
 
         auto current_context = context.Acquire();
@@ -69,12 +83,16 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
                 }
                 if (!state.queue.TryPop(next)) {
                     // The CPU usually releases the semaphore soon after: poll for half a
-                    // millisecond before sleeping, or every wait also waits out a host sleep
-                    // (title 1 waits ~25 times a second).
+                    // millisecond, then in short sleeps. Ocarina of Time waits here ~330 times a
+                    // second and its present waits for the work behind them: with 1 ms sleeps the
+                    // present waited ~17 ms a frame in Kokiri village, with 50 us ~1 ms. A channel
+                    // still waiting after 2 s (menus, loading) goes back to 1 ms sleeps.
                     Profile::Scope scope{Profile::Zone::PendingSleep};
-                    if (std::chrono::steady_clock::now() - last_progress <
-                        std::chrono::microseconds{500}) {
+                    const auto waited = std::chrono::steady_clock::now() - last_progress;
+                    if (waited < std::chrono::microseconds{500}) {
                         std::this_thread::yield();
+                    } else if (waited < std::chrono::seconds{2}) {
+                        std::this_thread::sleep_for(std::chrono::microseconds{50});
                     } else {
                         std::this_thread::sleep_for(std::chrono::milliseconds{1});
                     }
@@ -94,15 +112,14 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
                 auto* const rasterizer_ptr = renderer.ReadRasterizer();
                 if (auto* submit_list = std::get_if<SubmitListCommand>(&next.data)) {
                     Profile::Scope scope{Profile::Zone::Push};
-                    // Held-back guest CPU writes first (see the single-thread path below).
-                    split.Defer([gpu = &system.GPU()] { gpu->InvalidateGPUCache(); });
                     scheduler.Push(system.GPU(), submit_list->channel, std::move(submit_list->entries));
                 } else if (std::holds_alternative<GPUTickCommand>(next.data)) {
                     split.Defer([gpu = &system.GPU()] { gpu->TickWork(); });
                 } else if (auto* run = std::get_if<RunCommand>(&next.data)) {
                     if (run->before_later_reads) {
-                        split.Drain();
-                        run->func();
+                        // GPU memory maps unmap caches (UnmapMemory downloads): the back's state.
+                        split.DeferFunction(std::move(run->func));
+                        split.Drain(VideoCommon::DrainSite::Map);
                     } else {
                         split.DeferFunction(std::move(run->func));
                     }
@@ -125,12 +142,6 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
             }
             if (auto* submit_list = std::get_if<SubmitListCommand>(&next.data)) {
                 Profile::Scope scope{Profile::Zone::Push};
-                // Guest CPU writes to GPU-written memory are held back until the GPU thread
-                // applies them, by default at the next fence. The guest made them before it
-                // submitted this list, which may read them: apply them first. Pokemon Pokopia
-                // keeps constants in pages its native storage bindings mark GPU-written, and some
-                // frames drew stale ones (flickering shadows, stretched geometry).
-                system.GPU().InvalidateGPUCache();
                 scheduler.Push(system.GPU(), submit_list->channel, std::move(submit_list->entries));
             } else if (std::holds_alternative<GPUTickCommand>(next.data)) {
                 Profile::Scope scope{Profile::Zone::Tick};

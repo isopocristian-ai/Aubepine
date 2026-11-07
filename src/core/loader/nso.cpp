@@ -19,6 +19,7 @@
 #include "common/settings.h"
 #include "common/swap.h"
 #include "core/core.h"
+#include "core/arm/dynarmic/window_trace.h"
 #include "core/file_sys/patch_manager.h"
 #include "core/hle/kernel/code_set.h"
 #include "core/hle/kernel/k_page_table.h"
@@ -107,22 +108,35 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
         for (std::size_t i = 0; i < nso_header.segments.size(); ++i) {
             nso_file.Read(compressed_data.data(), nso_header.segments_compressed_size[i], nso_header.segments[i].offset);
             if (nso_header.IsSegmentCompressed(i)) {
+                const u32 segment_size = nso_header.segments[i].size;
                 if (nso_header.IsZBICCompressed()) {
                     // ZBIC compression
                     const int r = Common::Compression::DecompressDataZBIC(
-                        std::span<u8>{decompressed_size}.first(nso_header.segments[i].size),
+                        std::span<u8>{decompressed_size}.first(segment_size),
                         std::span<const u8>{compressed_data}.first(nso_header.segments_compressed_size[i])
                     );
-                    ASSERT(r > 0);
+                    // A failed segment would leave the previous segment's bytes in the buffer and
+                    // boot a corrupt image that hangs without presenting; refuse to load instead.
+                    if (r <= 0) {
+                        LOG_ERROR(Loader, "{}: segment {} failed ZBIC decompression",
+                                  nso_file.GetName(), i);
+                        return std::nullopt;
+                    }
+                    if (static_cast<u32>(r) != segment_size) {
+                        LOG_WARNING(Loader, "{}: segment {} decompressed to {:#x} of {:#x} bytes",
+                                    nso_file.GetName(), i, r, segment_size);
+                        std::fill(decompressed_size.begin() + r,
+                                  decompressed_size.begin() + segment_size, u8{0});
+                    }
                 } else {
                     // LZ4 compression
                     int r = Common::Compression::DecompressDataLZ4(
                         decompressed_size.data(),
-                        nso_header.segments[i].size,
+                        segment_size,
                         compressed_data.data(),
                         nso_header.segments_compressed_size[i]
                     );
-                    ASSERT(r == int(nso_header.segments[i].size));
+                    ASSERT(r == int(segment_size));
                 }
 
                 std::memcpy(
@@ -177,24 +191,16 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
         std::copy(pi_header.begin() + sizeof(NSOHeader), pi_header.end(), patchable_section.data());
     }
 
-    // Mario Kart World picks how many vblanks each frame lasts (its present interval) from a mode
-    // in its frame loop: 0 = from the frame time, 1 = 60 fps, 2 = 30 fps, and advances its clock by
-    // that many vblanks a frame. Forcing 2 gives a steady 30 fps at normal game speed. The mode's
-    // load is found by its code (same in 1.0.0 at 0x3A9EC8 and 1.8.0 at 0x69CC54):
-    //   cmp w9, w1; b.ne; ldr w8, [x19, #0x210]; cbnz w8; ... mov w8, #0x42700000 (60.0f)
-    //
-    // Dynamic mode (mkw_dynamic_fps) forces mode 0. The game then sets each frame's interval (1 or
-    // 2 vblanks) from how late its frames run, but it times only its own CPU work ([fw+0x128],
-    // calc), which is fast under emulation where the GPU thread is the slow part: it stayed at 1
-    // and the game ran in slow motion. The same loop also stores the whole frame's time
-    // ([fw+0xe8], calc + draw + present), so the interval code is pointed at that one.
+    // Mario Kart World selects a 1- or 2-vblank frame mode in its main loop. Force its native
+    // 30 FPS mode, or let it choose dynamically using the whole frame time (CPU + GPU wait).
+    // Match the instruction sequence instead of relying on a title-version-specific address.
     const bool mkw_dynamic = Settings::values.mkw_dynamic_fps.GetValue();
     bool mkw_dynamic_fps_patch_applied = false;
     if ((mkw_dynamic || Settings::values.mkw_30fps.GetValue()) && name == "main" &&
-        process.GetProgramId() == 0x0400C3F00006E000ULL) {
+        process.GetProgramId() == Settings::MarioKartWorldProgramId) {
         constexpr u32 ModeLoadInsn = 0xB9421268; // ldr w8, [x19, #0x210]
-        const u32 Force30Insn = mkw_dynamic ? 0x52800008U  // mov w8, #0
-                                            : 0x52800048U; // mov w8, #2
+        const u32 mode = mkw_dynamic ? 0U : 2U;
+        const u32 mode_instruction = 0x52800008U | (mode << 5); // mov w8, #mode
         const auto& text = nso_header.segments[0];
         u8* const code = codeset.memory.data() + module_start + text.location;
         const size_t count = text.size / sizeof(u32);
@@ -203,8 +209,8 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
             std::memcpy(&value, code + index * sizeof(u32), sizeof(value));
             return value;
         };
-        size_t found = 0;
-        size_t matches = 0;
+        size_t mode_site = 0;
+        size_t mode_matches = 0;
         for (size_t i = 2; i + 8 < count; ++i) {
             if (word(i) != ModeLoadInsn || word(i - 2) != 0x6B01013F || // cmp w9, w1
                 (word(i - 1) & 0xFF00001F) != 0x54000001 ||             // b.ne
@@ -212,93 +218,41 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
                 continue;
             }
             for (size_t j = i + 2; j < i + 8; ++j) {
-                if (word(j) == 0x52A84E08) { // mov w8, #0x42700000
-                    found = i;
-                    ++matches;
+                if (word(j) == 0x52A84E08) { // mov w8, #60.0f
+                    mode_site = i;
+                    ++mode_matches;
                     break;
                 }
             }
         }
-        // Dynamic: the frame time load after it, ldr xN, [x19, #0x128] -> [x19, #0xe8].
-        size_t frame_time = 0;
-        if (matches == 1 && mkw_dynamic) {
-            for (size_t j = found + 1; j < found + 32 && j < count; ++j) {
-                if ((word(j) & 0xFFFFFFE0) == 0xF9409660) {
-                    frame_time = j;
-                    break;
+
+        size_t frame_time_site = 0;
+        size_t frame_time_matches = 0;
+        if (mode_matches == 1 && mkw_dynamic) {
+            for (size_t i = mode_site + 1; i < mode_site + 32 && i < count; ++i) {
+                if ((word(i) & 0xFFFFFFE0) == 0xF9409660) { // ldr xN, [x19, #0x128]
+                    frame_time_site = i;
+                    ++frame_time_matches;
                 }
             }
         }
-        if (matches == 1 && mkw_dynamic && frame_time == 0) {
-            LOG_WARNING(Loader, "Mario Kart World: dynamic FPS not applied (frame time not found)");
-        } else if (matches == 1) {
-            std::memcpy(code + found * sizeof(u32), &Force30Insn, sizeof(Force30Insn));
+
+        if (mode_matches == 1 && (!mkw_dynamic || frame_time_matches == 1)) {
+            std::memcpy(code + mode_site * sizeof(u32), &mode_instruction,
+                        sizeof(mode_instruction));
             if (mkw_dynamic) {
-                const u32 whole_frame = 0xF9407660 | (word(frame_time) & 0x1F);
-                std::memcpy(code + frame_time * sizeof(u32), &whole_frame, sizeof(whole_frame));
+                const u32 whole_frame_time = 0xF9407660 | (word(frame_time_site) & 0x1F);
+                std::memcpy(code + frame_time_site * sizeof(u32), &whole_frame_time,
+                            sizeof(whole_frame_time));
                 mkw_dynamic_fps_patch_applied = true;
             }
-            LOG_INFO(Loader, "Mario Kart World: {} on (main+{:#x})",
-                     mkw_dynamic ? "dynamic FPS" : "30 FPS mode",
-                     text.location + found * sizeof(u32));
+            LOG_INFO(Loader, "Mario Kart World: {} FPS mode enabled (main+{:#x})",
+                     mkw_dynamic ? "dynamic" : "30",
+                     text.location + mode_site * sizeof(u32));
         } else {
-            LOG_WARNING(Loader, "Mario Kart World: 30 FPS mode not applied ({} matches)", matches);
-        }
-    }
-
-    // Donkey Kong Bananza has no vblank-mode selector like Mario Kart World. Its frame rate
-    // controller calls nn::vi::SetLayerExtendedSwapInterval(layer, 1, fps) from two sites; forcing
-    // fps = 30 there locks the game to 30. Sites are found by their code (same in base and 458752):
-    //   A: ldr x0,[x19,#0x180]; mov w1,#1; ldr w2,[x19,#0xE0]; bl   (patch the ldr w2)
-    //   B: ldr x0,[x0,#0x180];  mov w1,#1; mov w2,w19;          bl   (patch the mov w2)
-    if (Settings::values.dk_30fps.GetValue() && name == "main" &&
-        process.GetProgramId() == 0x040074A01BF12000ULL) {
-        const auto& text = nso_header.segments[0];
-        u8* const code = codeset.memory.data() + module_start + text.location;
-        const size_t count = text.size / sizeof(u32);
-        const auto word = [code](size_t index) {
-            u32 value;
-            std::memcpy(&value, code + index * sizeof(u32), sizeof(value));
-            return value;
-        };
-        size_t site_a = 0, site_b = 0, matches_a = 0, matches_b = 0;
-        for (size_t i = 0; i + 3 < count; ++i) {
-            if ((word(i + 3) & 0xFC000000) != 0x94000000 || word(i + 1) != 0x52800021) {
-                continue; // bl, mov w1,#1
-            }
-            if (word(i) == 0xF940C260 && word(i + 2) == 0xB940E262) {
-                site_a = i + 2;
-                ++matches_a;
-            } else if (word(i) == 0xF940C000 && word(i + 2) == 0x2A1303E2) {
-                site_b = i + 2;
-                ++matches_b;
-            }
-        }
-        // The controller's own dynamic divisor (vblanks per frame, 1..3) drives the present interval.
-        // Pin it: mov w8,#60; ldr w9,[x20,#0x24]; str w21,[x20,#0x40]; sdiv w8,w8,w21 -> w21=2, w8=30.
-        size_t site_div = 0, matches_div = 0;
-        for (size_t i = 0; i + 4 < count; ++i) {
-            if (word(i) == 0x52800788 && word(i + 1) == 0xB9402689 && word(i + 2) == 0xB9004295 &&
-                word(i + 3) == 0x1AD50D08 && word(i + 4) == 0x2A0803E1) {
-                site_div = i;
-                ++matches_div;
-            }
-        }
-        if (matches_a == 1 && matches_b == 1 && matches_div == 1) {
-            constexpr u32 Mov30 = 0x528003C2;   // mov w2, #30
-            constexpr u32 MovDiv2 = 0x52800055; // mov w21, #2
-            constexpr u32 MovFps30 = 0x528003C8; // mov w8, #30
-            std::memcpy(code + site_a * sizeof(u32), &Mov30, sizeof(Mov30));
-            std::memcpy(code + site_b * sizeof(u32), &Mov30, sizeof(Mov30));
-            std::memcpy(code + site_div * sizeof(u32), &MovDiv2, sizeof(MovDiv2));
-            std::memcpy(code + (site_div + 3) * sizeof(u32), &MovFps30, sizeof(MovFps30));
-            LOG_INFO(Loader,
-                     "Donkey Kong Bananza: 30 FPS lock on (main+{:#x}, main+{:#x}, main+{:#x})",
-                     text.location + site_a * sizeof(u32), text.location + site_b * sizeof(u32),
-                     text.location + site_div * sizeof(u32));
-        } else {
-            LOG_WARNING(Loader, "Donkey Kong Bananza: 30 FPS lock not applied ({}/{}/{} matches)",
-                        matches_a, matches_b, matches_div);
+            LOG_WARNING(Loader,
+                        "Mario Kart World FPS patch skipped (mode matches {}, frame-time matches {})",
+                        mode_matches, frame_time_matches);
         }
     }
 
@@ -373,6 +327,18 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
     }
 
     // Load codeset for current process
+    if (name == "sdk") {
+        const bool matching_sdk =
+            Core::WindowTrace::Enabled() && process.GetProgramId() == Core::WindowTrace::ProgramId &&
+            Common::HexToString(std::span{nso_header.build_id}.first(20)) ==
+                "41D4DE4A3B78214AD20C896960DF0E5EA0ED595F";
+        Core::WindowTrace::sessions.Reset(&process, matching_sdk ? load_base : 0);
+        if (Core::WindowTrace::Enabled()) {
+            const auto session = Core::WindowTrace::sessions.Find(&process);
+            LOG_INFO(Loader, "Star Fox window trace: matching SDK={} base={:#x} session={}",
+                     matching_sdk, matching_sdk ? load_base : 0, session ? session->id : 0);
+        }
+    }
     LOG_INFO(Loader, "Module {} loaded at {:#x} (size {:#x})", nso_file.GetName(), load_base, image_size);
     process.LoadModule(system.Kernel(), std::move(codeset), load_base);
     if (name == "main" && process.GetProgramId() == Settings::MarioKartWorldProgramId) {

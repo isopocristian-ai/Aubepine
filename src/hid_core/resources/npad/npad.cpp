@@ -18,7 +18,6 @@
 #include "core/hle/kernel/k_readable_event.h"
 #include "core/hle/service/kernel_helpers.h"
 #include "hid_core/frontend/emulated_controller.h"
-#include "hid_core/frontend/emulated_devices.h"
 #include "hid_core/hid_core.h"
 #include "hid_core/hid_result.h"
 #include "hid_core/hid_util.h"
@@ -145,15 +144,15 @@ void NPad::FreeAppletResourceId(u64 aruid) {
 }
 
 void NPad::ControllerUpdate(Kernel::KernelCore& kernel, Core::HID::ControllerTriggerType type, std::size_t controller_idx) {
+    // Input callbacks can arrive before SetNpadExternals installs the applet resource.
+    const auto applet_resource = applet_resource_holder.applet_resource;
+    if (applet_resource == nullptr) {
+        return;
+    }
+
     if (type == Core::HID::ControllerTriggerType::All) {
         ControllerUpdate(kernel, Core::HID::ControllerTriggerType::Connected, controller_idx);
         ControllerUpdate(kernel, Core::HID::ControllerTriggerType::Battery, controller_idx);
-        return;
-    }
-    // Controllers report connection and battery changes from the input thread as soon as they
-    // are set up, which can be before the HID service activated its applet resource.
-    const auto applet_resource = applet_resource_holder.applet_resource;
-    if (applet_resource == nullptr) {
         return;
     }
 
@@ -458,17 +457,6 @@ void NPad::RequestPadStateUpdate(Kernel::KernelCore& kernel, u64 aruid, Core::HI
                                           btn::StickRRight | btn::StickRDown;
         pad_entry.npad_buttons.raw = button_state.raw & right_button_mask;
         pad_entry.r_stick = stick_state.right;
-
-        // The host mouse is this Joy-Con's mouse (Nmouse): its clicks are the Joy-Con's ZR and R.
-        if (npad_id == Core::HID::NpadIdType::Player1 && hid_core.IsNmouseInUse()) {
-            const auto mouse_buttons = hid_core.GetEmulatedDevices()->GetMouseButtons();
-            if (mouse_buttons.left) {
-                pad_entry.npad_buttons.raw |= btn::ZR;
-            }
-            if (mouse_buttons.right) {
-                pad_entry.npad_buttons.raw |= btn::R;
-            }
-        }
     }
 
     if (controller_type != Core::HID::NpadStyleIndex::JoyconRight) {
@@ -597,16 +585,14 @@ void NPad::OnUpdate(Kernel::KernelCore& kernel, const Core::Timing::CoreTiming& 
                 npad->handheld_lifo.WriteNextEntry(pad_state);
                 break;
             case Core::HID::NpadStyleIndex::JoyconDual:
-                pad_state.connection_status.raw = 0;
-                pad_state.connection_status.is_connected.Assign(1);
-                if (controller.is_dual_left_connected) {
-                    pad_state.connection_status.is_left_connected.Assign(1);
-                    libnx_state.connection_status.is_left_connected.Assign(1);
-                }
-                if (controller.is_dual_right_connected) {
-                    pad_state.connection_status.is_right_connected.Assign(1);
-                    libnx_state.connection_status.is_right_connected.Assign(1);
-                }
+                // Built in one store: assigning is_left_connected and then is_right_connected
+                // (two BitField members of the same union) under an if each, GCC 13 -O3 keeps
+                // only the last one and writes 0x11 instead of 0x15. Games then see the left
+                // Joy-Con missing and reopen the controller applet without end.
+                pad_state.connection_status.raw =
+                    1u | (controller.is_dual_left_connected ? 1u << 2 : 0u) |
+                    (controller.is_dual_right_connected ? 1u << 4 : 0u);
+                libnx_state.connection_status.raw = pad_state.connection_status.raw;
 
                 pad_state.sampling_number =
                     npad->joy_dual_lifo.ReadCurrentEntry().state.sampling_number + 1;

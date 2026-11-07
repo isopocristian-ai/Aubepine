@@ -12,6 +12,7 @@
 #include <utility>
 #include <vector>
 
+#include "common/bit_util.h"
 #include "common/common_types.h"
 
 namespace Tegra {
@@ -20,25 +21,17 @@ namespace Tegra {
 // Ampere classes and the Turing+ macro ISA, which Eden's Maxwell engines don't implement.
 inline std::atomic<bool> g_nx2_ampere{false};
 
-// The running title, for the few places that must behave differently per game.
-inline std::atomic<u64> g_nx2_program_id{0};
+// GPU VA that nx2:gpu GetVaRange and GetUserPartition report to NVN. The in-process
+// allocator hands out addresses in [Nx2GpuVaStart, Nx2GpuVaEnd). NvRm's AllocAsEx range
+// can be smaller; the GMMU page tables still have to cover this one.
+inline constexpr u64 Nx2GpuVaStart = 0x8000000ULL;
+inline constexpr u64 Nx2GpuVaEnd = 0xC000000000ULL;
 
-// Titles whose guest side reads GPU-written buffer data through a path the buffer cache does not
-// see, so their buffers must be copied back to guest memory at every fence
-// (BufferCache::AsyncBufferDownloads, EDEN_NX2_BUFFER_DOWNLOADS). 0400A3A01EE4C000 is Pokemon
-// Pokopia: with the copy-back off its sky is black or flickers. 0400C3F00006E000 is Mario Kart
-// World: its CPU reads road textures written by compute shaders. Not a default for every title:
-// Kirby Air Riders filled 30 GiB of host memory with it. Open work: find what reads it, then the
-// list goes.
-inline bool Nx2NeedsBufferDownloads() {
-    switch (g_nx2_program_id.load(std::memory_order_relaxed)) {
-    case 0x0400A3A01EE4C000ULL:
-    case 0x0400C3F00006E000ULL:
-        return true;
-    default:
-        return false;
-    }
-}
+/// Bytes a Switch 2 GMMU covers when it is sized from Nx2GpuVaEnd. That end is not a
+/// power of two, so the page tables round up (Log2Ceil). NvRm's va_range_end can only
+/// make this larger. A range past it is left mapped, and its backing must stay.
+inline constexpr u64 Nx2GpuAddressSpaceSize = 1ULL << Common::Log2Ceil(Nx2GpuVaEnd);
+static_assert(Nx2GpuAddressSpaceSize == (1ULL << 40));
 
 // Device pages the GPU has written through the buffer cache (shader stores, copies), ever. Title 1
 // runs command lists the GPU writes each frame (20-byte entries its culling fills in); read
@@ -110,10 +103,26 @@ inline void Nx2ClearGpuWrittenPages() {
     return (g_nx2_gpu_written_pages[page / 64].load(std::memory_order_relaxed) >> (page % 64)) & 1;
 }
 
-// NVN2 queues release their progress values into the second page of a two-page GPU-accessible
-// region and GPU acquires read the same offsets in the first page (the CPU polls the second).
-// Something on the console copies one into the other; until that is known, the puller mirrors
-// releases that land in a second page. Every queue has such a region, so keep a small table.
+/// False only when no page of [device_address, device_address + size) has been GPU-written.
+/// Every range the buffer cache records as GPU-modified also marks its pages here, under its
+/// lock, so this answers MustFlushRegion without taking it. Ranges past the bitmap answer true.
+[[nodiscard]] inline bool Nx2MayBeGpuWritten(u64 device_address, u64 size) {
+    if (size == 0) {
+        return false;
+    }
+    const u64 first = device_address >> Nx2WrittenPageBits;
+    const u64 last = (device_address + size - 1) >> Nx2WrittenPageBits;
+    if (last < first || last >= g_nx2_gpu_written_pages.size() * 64) {
+        return true;
+    }
+    for (u64 page = first; page <= last; ++page) {
+        if ((g_nx2_gpu_written_pages[page / 64].load(std::memory_order_relaxed) >> (page % 64)) & 1) {
+            return true;
+        }
+    }
+    return false;
+}
+
 inline constexpr size_t Nx2MaxSemaphoreRegions = 32;
 inline std::array<std::atomic<u64>, Nx2MaxSemaphoreRegions> g_nx2_semaphore_regions{}; // starts
 
@@ -156,9 +165,6 @@ inline std::recursive_mutex g_nx2_sparse_backing_mutex;
 inline Nx2SparseBackingHandler g_nx2_sparse_backing;
 inline std::atomic<u64> g_nx2_sparse_low{~u64{0}};
 inline std::atomic<u64> g_nx2_sparse_high{0};
-/// Set by the renderer before a game runs: false when the host driver can't use the sparse images
-/// lazily backed regions lead to (AMD's Windows driver divides by zero in amdvlk64.dll).
-inline std::atomic<bool> g_nx2_sparse_lazy_supported{true};
 
 inline void Nx2SetSparseBacking(Nx2SparseBackingHandler handler) {
     std::scoped_lock lk{g_nx2_sparse_backing_mutex};
@@ -351,20 +357,6 @@ inline bool Nx2SparseUnwritten(u64 gpu_address, u64 size) {
         }
     }
     return true;
-}
-
-/// GPU VA in the first page that mirrors a release at `address`, or 0.
-inline u64 Nx2SemaphoreMirror(u64 address) {
-    for (const auto& region : g_nx2_semaphore_regions) {
-        const u64 start = region.load(std::memory_order_relaxed);
-        if (start == 0) {
-            continue;
-        }
-        if (address >= start + 0x1000 && address < start + 0x2000) {
-            return address - 0x1000;
-        }
-    }
-    return 0;
 }
 
 /// Channels suspended on a semaphore acquire. A console channel polls and sees every release;

@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <span>
 #include <vector>
 
 #include "common/alignment.h"
@@ -24,7 +25,7 @@ template <typename T, typename Id = u32>
 class DescriptorTable {
 public:
     [[nodiscard]] bool Synchronize(GPUVAddr gpu_addr, u32 limit) noexcept {
-        bool ret = !(current_gpu_addr == gpu_addr && requested_limit == limit);
+        bool ret = !(current_gpu_addr == gpu_addr && current_limit == limit);
         if (ret) {
             Refresh(gpu_addr, limit);
         }
@@ -35,6 +36,11 @@ public:
         // Cleared on the next read: the texture cache invalidates every channel's tables for
         // each image it deletes, dozens of times a frame while its collector runs.
         invalidated = true;
+    }
+
+    std::span<Id> LiveBoundIds() noexcept {
+        return std::span{bound_ids}.first(
+            (std::min)(bound_ids.size(), size_t{current_limit} + 1));
     }
 
     template <class MemoryManager>
@@ -69,13 +75,10 @@ public:
 
     void Refresh(GPUVAddr gpu_addr, u32 limit) noexcept {
         current_gpu_addr = gpu_addr;
-        requested_limit = limit;
-        // Garbage commands can name any limit, and sizing the table from one near 2^32 asked for
-        // gigabytes here. Callers check indices against current_limit, so reads stay inside.
-        current_limit = (std::min)(limit, MaxLimit);
+        current_limit = limit;
         // Mario Brothership reallocates a lot of times, so use aggressive pre-alloc sizes
         // std::vector<T> by default uses quadratic growth, but that isn't even enough to satisfy brothership
-        const size_t num_descriptors = ((current_limit + 0x80000) & (~0x7ffff)) + 1;
+        const size_t num_descriptors = ((limit + 0x80000) & (~0x7ffff)) + 1;
         read_descriptors.resize(Common::DivCeil(num_descriptors, 64U));
         ClearReadDescriptors();
         invalidated = false;
@@ -89,12 +92,9 @@ public:
     std::vector<Id> bound_ids;
     GPUVAddr current_gpu_addr{};
     u32 current_limit{};
-    u32 requested_limit{}; ///< the limit as the game set it, before the clamp
     bool invalidated{}; ///< read_descriptors is to be cleared before the next read
 
 private:
-    static constexpr u32 MaxLimit = (1U << 22) - 1;
-
     void ClearReadDescriptors() noexcept {
         // Reserved capacity is not addressable. A later limit increase clears its new range.
         const size_t words = (std::min)(read_descriptors.size(), size_t{current_limit} / 64 + 1);

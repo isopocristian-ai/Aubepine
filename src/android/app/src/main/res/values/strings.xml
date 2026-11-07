@@ -594,7 +594,7 @@
     <string name="skip_cpu_inner_invalidation">Skip CPU Inner Invalidation</string>
     <string name="skip_cpu_inner_invalidation_description">Skips certain CPU-side cache invalidations during memory updates, reducing CPU usage and improving it\'s performance. This may cause glitches or crashes on some games.</string>
     <string name="fix_bloom_effects">Fix Bloom Effects</string>
-    <string name="fix_bloom_effects_description">Removes bloom in Burnout.</string>
+    <string name="fix_bloom_effects_description">Reduces bloom blur in LA/EOW (Adreno A6XX - A7XX/ Turnip), removes bloom in Burnout. Warning: may cause graphical artifacts in other games.</string>
     <string name="emulate_bgr565">Emulate BGR565</string>
     <string name="emulate_bgr565_description">Fixes problems with inverted colors in games or strange artifacts or strange shadows.</string>
     <string name="rescale_hack">Enable Legacy Rescale Pass</string>
@@ -945,6 +945,8 @@
     <string name="loader_error_encrypted_roms_description"><![CDATA[Please follow the guides to redump your <a href=\"https://yuzu-mirror.github.io/help/quickstart/#dumping-physical-titles-game-cards\">game cartridges</a> or <a href=\"https://yuzu-mirror.github.io/help/quickstart/#dumping-digital-titles-eshop\">installed titles</a>.]]></string>
     <string name="loader_error_encrypted_keys_description"><![CDATA[Please ensure your <a href=\"https://yuzu-mirror.github.io/help/quickstart/#dumping-prodkeys-and-titlekeys\">prod.keys</a> file is installed so that games can be decrypted.]]></string>
     <string name="loader_error_video_core">An error occurred initializing the video core</string>
+    <string name="loader_error_memory">Not enough memory to start the game</string>
+    <string name="loader_error_memory_description">Lichii could not allocate the game\'s memory. Close other applications to free memory, then try again.</string>
     <string name="loader_error_video_core_description">This is usually caused by an incompatible GPU driver. Installing a custom GPU driver may resolve this problem.</string>
     <string name="loader_error_file_not_found">ROM file does not exist</string>
 

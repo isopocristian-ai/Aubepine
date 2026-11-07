@@ -5,7 +5,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <cstddef>
-#include <cstdlib>
 #include <limits>
 #include <map>
 #include <memory>
@@ -19,6 +18,7 @@
 #include "common/common_types.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
+#include "video_core/query_cache/frame_trace.h"
 #include "video_core/query_cache/query_cache.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
@@ -219,6 +219,15 @@ public:
         // Time's title screen and file select reached 16,384 slots over 64 banks (its gameplay
         // windows span at most 36 slots). Past a bank, drop the count as a reset would.
         if (current_query && current_query->size_slots > SamplesQueryBank::BANK_SIZE) {
+            // It drops a real count. Logged on the 1st, 2nd, 4th, 8th... drop, so a window this
+            // long during gameplay doesn't go unnoticed and a title screen doesn't flood the log.
+            ++bank_bound_resets;
+            if ((bank_bound_resets & (bank_bound_resets - 1)) == 0) {
+                LOG_WARNING(Render_Vulkan,
+                            "Samples query ran {} slots with no reset or report, dropped its "
+                            "count (drop {})",
+                            current_query->size_slots, bank_bound_resets);
+            }
             ResetCounter();
         }
     }
@@ -268,25 +277,8 @@ public:
             auto& resolve_buffer = buffers[resolve_buffer_index];
             VkQueryPool query_pool = bank->GetInnerPool();
             scheduler.RequestOutsideRenderPassOperationContext();
-            // AMD's driver appears to poll every slot under the wait flag (about 2 ms per copy
-            // of up to 256 slots), so drain the pipeline once and copy without waiting.
-            static const bool wait_for_slots = [this] {
-                const char* value = std::getenv("EDEN_NX2_QUERY_NOWAIT");
-                const bool disabled = value != nullptr && value[0] == '0';
-                return disabled || device.GetDriverID() != VK_DRIVER_ID_AMD_PROPRIETARY;
-            }();
-            scheduler.Record([start, amount, base_offset, query_pool, wait_for_slots = wait_for_slots,
+            scheduler.Record([start, amount, base_offset, query_pool,
                               buffer = *resolve_buffer](vk::CommandBuffer cmdbuf) {
-                if (!wait_for_slots) {
-                    static constexpr VkMemoryBarrier DRAIN_BARRIER{
-                        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
-                        .pNext = nullptr,
-                        .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
-                        .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
-                    };
-                    cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                                           VK_PIPELINE_STAGE_TRANSFER_BIT, 0, DRAIN_BARRIER);
-                }
                 const VkBufferMemoryBarrier copy_query_pool_barrier{
                     .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
                     .pNext = nullptr,
@@ -302,8 +294,7 @@ public:
                 cmdbuf.CopyQueryPoolResults(
                     query_pool, static_cast<u32>(start), static_cast<u32>(amount), buffer,
                     static_cast<u32>(base_offset), SamplesQueryBank::QUERY_SIZE,
-                    (wait_for_slots ? VK_QUERY_RESULT_WAIT_BIT : VK_QUERY_RESULT_PARTIAL_BIT) |
-                        VK_QUERY_RESULT_64_BIT);
+                    VK_QUERY_RESULT_WAIT_BIT | VK_QUERY_RESULT_64_BIT);
                 cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT,
                                        VK_PIPELINE_STAGE_TRANSFER_BIT, 0, copy_query_pool_barrier);
             });
@@ -430,6 +421,14 @@ public:
             });
             query->value = total;
             query->flags |= VideoCommon::QueryFlagBits::IsFinalValueSynced;
+            if (const u64 trace =
+                    VideoCommon::QueryTrace::Sample(VideoCommon::QueryTrace::Event::HostResult)) {
+                LOG_INFO(Render_Vulkan,
+                         "DKB_QUERY host-result n={} device={:#x} stream={} slot={} "
+                         "value={:#x} flags={:#x} source=occlusion pre_amend=true",
+                         trace, query->guest_address, GetId(), q, query->value,
+                         static_cast<u32>(query->flags));
+            }
         }
     }
 
@@ -635,6 +634,7 @@ private:
     bool accumulation_since_last_sync{};
     VideoCommon::HostQueryBase* current_query;
     bool has_started{};
+    u64 bank_bound_resets{}; ///< Counts CloseCounter dropped once a query outgrew a bank.
     std::mutex flush_guard;
     std::optional<QueriesPrefixScanPass> queries_prefix_scan_pass;
 };
@@ -929,6 +929,14 @@ public:
             std::memcpy(&result, staging_ref.mapped_span.data() + offset_base, sizeof(u32));
             query->value = static_cast<u64>(result);
             query->flags |= VideoCommon::QueryFlagBits::IsFinalValueSynced;
+            if (const u64 trace =
+                    VideoCommon::QueryTrace::Sample(VideoCommon::QueryTrace::Event::HostResult)) {
+                LOG_INFO(Render_Vulkan,
+                         "DKB_QUERY host-result n={} device={:#x} stream={} slot={} "
+                         "value={:#x} flags={:#x} source=transform-feedback pre_amend=true",
+                         trace, query->guest_address, GetId(), q, query->value,
+                         static_cast<u32>(query->flags));
+            }
             offset_base += TFBQueryBank::QUERY_SIZE;
         }
 
@@ -1493,12 +1501,31 @@ void QueryCacheRuntime::HostConditionalRenderingCompareBCImpl(DAddr address, boo
     }
 }
 
+void QueryCacheRuntime::TraceConditionalRendering(const char* path, bool handled, DAddr address,
+                                                 DAddr address_2) {
+    if (const u64 trace =
+            VideoCommon::QueryTrace::Sample(VideoCommon::QueryTrace::Event::VulkanCondition)) {
+        const auto* engine = impl->maxwell3d;
+        LOG_INFO(Render_Vulkan,
+                 "DKB_CONDITION vulkan n={} gpu={:#x} mode={} device={:#x}/{:#x} path={} "
+                 "handled={} hcr_set={} decision={} predicate=unknown inverted={}",
+                 trace, engine ? engine->regs.render_enable.Address() : 0,
+                 engine ? static_cast<u32>(engine->regs.render_enable.mode) : 0, address, address_2,
+                 path, handled, impl->hcr_is_set,
+                 !handled ? "cpu-fallback" : impl->hcr_is_set ? "GPU-deferred" : "execute-bypass",
+                 impl->hcr_is_set &&
+                     (impl->hcr_setup.flags & VK_CONDITIONAL_RENDERING_INVERTED_BIT_EXT) != 0);
+    }
+}
+
 bool QueryCacheRuntime::HostConditionalRenderingCompareValue(VideoCommon::LookupData object_1,
                                                              [[maybe_unused]] bool qc_dirty) {
     if (!impl->device.IsExtConditionalRendering()) {
+        TraceConditionalRendering("extension-unavailable", false, object_1.address);
         return false;
     }
     HostConditionalRenderingCompareBCImpl(object_1.address, true, true);
+    TraceConditionalRendering("resolve-zero", true, object_1.address);
     return true;
 }
 
@@ -1506,6 +1533,7 @@ bool QueryCacheRuntime::HostConditionalRenderingCompareValues(VideoCommon::Looku
                                                               VideoCommon::LookupData object_2,
                                                               bool qc_dirty, bool equal_check) {
     if (!impl->device.IsExtConditionalRendering()) {
+        TraceConditionalRendering("extension-unavailable", false, object_1.address, object_2.address);
         return false;
     }
 
@@ -1536,11 +1564,13 @@ bool QueryCacheRuntime::HostConditionalRenderingCompareValues(VideoCommon::Looku
 
     if (!is_in_ac[0] && !is_in_ac[1]) {
         EndHostConditionalRendering();
+        TraceConditionalRendering("uncached", false, object_1.address, object_2.address);
         return false;
     }
 
     if (!qc_dirty && !is_in_bc[0] && !is_in_bc[1]) {
         EndHostConditionalRendering();
+        TraceConditionalRendering("guest-synchronized", false, object_1.address, object_2.address);
         return false;
     }
 
@@ -1549,6 +1579,7 @@ bool QueryCacheRuntime::HostConditionalRenderingCompareValues(VideoCommon::Looku
 
     if ((!is_gpu_high && driver_id == VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS) || driver_id == VK_DRIVER_ID_QUALCOMM_PROPRIETARY || driver_id == VK_DRIVER_ID_ARM_PROPRIETARY || driver_id == VK_DRIVER_ID_MESA_TURNIP) {
         EndHostConditionalRendering();
+        TraceConditionalRendering("driver-bypass", true, object_1.address, object_2.address);
         return true;
     }
 
@@ -1560,20 +1591,25 @@ bool QueryCacheRuntime::HostConditionalRenderingCompareValues(VideoCommon::Looku
         if (is_null[i]) {
             size_t j = (i + 1) % 2;
             HostConditionalRenderingCompareValueImpl(*objects[j], equal_check);
+            TraceConditionalRendering(i == 0 ? "initial-zero" : "current-zero", true,
+                                      object_1.address, object_2.address);
             return true;
         }
     }
 
     if (!is_gpu_high) {
         EndHostConditionalRendering();
+        TraceConditionalRendering("accuracy-bypass", true, object_1.address, object_2.address);
         return true;
     }
 
     if (!is_in_bc[0] && !is_in_bc[1]) {
         EndHostConditionalRendering();
+        TraceConditionalRendering("query-cache-bypass", true, object_1.address, object_2.address);
         return true;
     }
     HostConditionalRenderingCompareBCImpl(object_1.address, equal_check);
+    TraceConditionalRendering("resolve-compare", true, object_1.address, object_2.address);
     return true;
 }
 

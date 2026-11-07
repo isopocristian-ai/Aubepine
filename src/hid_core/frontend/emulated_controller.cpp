@@ -5,15 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
-#include <array>
 #include <chrono>
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
-#include <string_view>
-#include <utility>
-#include <vector>
-
 #include <common/scope_exit.h>
 
 #include <ranges>
@@ -24,7 +16,6 @@
 #include "hid_core/hid_util.h"
 
 namespace Core::HID {
-constexpr s32 HID_JOYSTICK_MAX = 0x7fff;
 constexpr s32 HID_TRIGGER_MAX = 0x7fff;
 constexpr u32 TURBO_BUTTON_DELAY = 4;
 // Use a common UUID for TAS and Virtual Gamepad
@@ -1812,60 +1803,31 @@ CaptureButtonState EmulatedController::GetCaptureButtons() const {
     return controller.capture_button_state;
 }
 
-// EDEN_AUTO_BUTTONS=<start>,<end>,<button>[+<button>...][;...]: holds those buttons (a b x y l r zl
-// zr plus minus up down left right) between the two times (seconds after launch), for unattended
-// runs that have to get through menus.
-static const auto auto_press_epoch = std::chrono::steady_clock::now();
-
-static u64 AutoButtons() {
-    struct Window {
-        double start;
-        double end;
-        u64 mask;
-    };
-    static const auto windows = [] {
-        static constexpr std::array<std::pair<std::string_view, u64>, 14> names{{
-            {"a", 1ULL << 0}, {"b", 1ULL << 1}, {"x", 1ULL << 2}, {"y", 1ULL << 3},
-            {"l", 1ULL << 6}, {"r", 1ULL << 7}, {"zl", 1ULL << 8}, {"zr", 1ULL << 9},
-            {"plus", 1ULL << 10}, {"minus", 1ULL << 11}, {"left", 1ULL << 12},
-            {"up", 1ULL << 13}, {"right", 1ULL << 14}, {"down", 1ULL << 15},
-        }};
-        std::vector<Window> parsed;
-        for (const char* cursor = std::getenv("EDEN_AUTO_BUTTONS"); cursor && *cursor;) {
-            Window window{};
-            char buttons[64]{};
-            if (std::sscanf(cursor, "%lf,%lf,%63[a-z+]", &window.start, &window.end, buttons) == 3) {
-                for (std::string_view rest{buttons}; !rest.empty();) {
-                    const size_t plus = rest.find('+');
-                    const std::string_view name = rest.substr(0, plus);
-                    for (const auto& [button, bit] : names) {
-                        if (button == name) window.mask |= bit;
-                    }
-                    rest = plus == std::string_view::npos ? std::string_view{} : rest.substr(plus + 1);
-                }
-                parsed.push_back(window);
-            }
-            cursor = std::strchr(cursor, ';');
-            if (cursor) ++cursor;
-        }
-        return parsed;
-    }();
-    if (windows.empty()) return 0;
-    const double now =
-        std::chrono::duration<double>(std::chrono::steady_clock::now() - auto_press_epoch).count();
-    u64 mask = 0;
-    for (const auto& window : windows) {
-        if (now >= window.start && now <= window.end) mask |= window.mask;
-    }
-    return mask;
-}
-
 NpadButtonState EmulatedController::GetNpadButtons() const {
     if (is_configuring)
         return {};
     NpadButtonState state{controller.npad_button_state.raw & GetTurboButtonMask()};
-    if (const u64 scripted = AutoButtons()) {
-        state.raw = static_cast<NpadButton>(static_cast<u64>(state.raw) | scripted);
+    const auto injected = Injected();
+    if (!injected) {
+        return state;
+    }
+    state.raw |= injected->buttons;
+    const auto directions = [&state](const AnalogStickState& stick, NpadButton left,
+                                     NpadButton up, NpadButton right, NpadButton down) {
+        constexpr s32 threshold = HID_JOYSTICK_MAX / 2;
+        state.raw &= ~(left | up | right | down);
+        state.raw |= stick.x < -threshold ? left : NpadButton::None;
+        state.raw |= stick.x > threshold ? right : NpadButton::None;
+        state.raw |= stick.y > threshold ? up : NpadButton::None;
+        state.raw |= stick.y < -threshold ? down : NpadButton::None;
+    };
+    if (injected->left) {
+        directions(*injected->left, NpadButton::StickLLeft, NpadButton::StickLUp,
+                   NpadButton::StickLRight, NpadButton::StickLDown);
+    }
+    if (injected->right) {
+        directions(*injected->right, NpadButton::StickRLeft, NpadButton::StickRUp,
+                   NpadButton::StickRRight, NpadButton::StickRDown);
     }
     return state;
 }
@@ -1879,7 +1841,26 @@ DebugPadButton EmulatedController::GetDebugPadButtons() const {
 AnalogSticks EmulatedController::GetSticks() const {
     if (is_configuring)
         return {};
-    return controller.analog_stick_state;
+    AnalogSticks sticks = controller.analog_stick_state;
+    if (const auto injected = Injected()) {
+        sticks.left = injected->left.value_or(sticks.left);
+        sticks.right = injected->right.value_or(sticks.right);
+    }
+    return sticks;
+}
+
+void EmulatedController::SetInputInjector(InputInjector injector_) {
+    std::scoped_lock lock{injector_mutex};
+    injector = std::move(injector_);
+    has_injector.store(static_cast<bool>(injector), std::memory_order_release);
+}
+
+std::optional<InjectedInput> EmulatedController::Injected() const {
+    if (!has_injector.load(std::memory_order_acquire)) {
+        return std::nullopt;
+    }
+    std::scoped_lock lock{injector_mutex};
+    return injector ? injector() : std::nullopt;
 }
 
 NpadGcTriggerState EmulatedController::GetTriggers() const {

@@ -10,6 +10,7 @@
 #include <mutex>
 #include <optional>
 #include <span>
+#include "video_core/page_filter.h"
 #include "common/container/unordered_map.h"
 #include <utility>
 
@@ -41,6 +42,9 @@ class QueryCacheBase : public VideoCommon::ChannelSetupCaches<VideoCommon::Chann
     using RuntimeType = typename Traits::RuntimeType;
 
 public:
+    /// Device pages this cache ever registered objects on (InnerInvalidation skips the rest).
+    VideoCommon::PageFilter page_filter;
+
     union QueryLocation {
         BitField<27, 5, u32> stream_id;
         BitField<0, 27, u32> query_id;
@@ -63,14 +67,19 @@ public:
     }
 
     void FlushRegion(VAddr addr, std::size_t size) {
+        if (SemiFlushRegion(addr, size)) {
+            RequestGuestHostSync();
+        }
+    }
+
+    /// Writes out the finalized reports in the region. True when some still wait for host results.
+    bool SemiFlushRegion(VAddr addr, std::size_t size) {
         bool result = false;
         IterateCache<false>(addr, size, [this, &result](QueryLocation location) {
             result |= SemiFlushQueryDirty(location);
             return result;
         });
-        if (result) {
-            RequestGuestHostSync();
-        }
+        return result;
     }
 
     static u64 BuildMask(std::span<const QueryType> types) {
@@ -103,11 +112,6 @@ public:
     void NotifyWFI();
 
     bool AccelerateHostConditionalRendering();
-
-    /// The payload of the newest semaphore release to cpu_addr that the GPU processed but whose
-    /// guest write still waits for the host GPU to finish the work before it (fences, and every
-    /// release in accurate GPU mode).
-    std::optional<u32> PendingRelease(DAddr cpu_addr);
 
     // Async downloads
     void CommitAsyncFlushes();
@@ -147,10 +151,12 @@ protected:
                 continue;
             }
             auto& contents = it->second;
+            bool matched = false;
             for (auto& query : contents) {
                 if (!in_range(query.first)) {
                     continue;
                 }
+                matched = true;
                 if constexpr (RETURNS_BOOL) {
                     if (func(query.second)) {
                         return;
@@ -159,7 +165,11 @@ protected:
                     func(query.second);
                 }
             }
+            // Only pages with a query in the range: the scan above already found none elsewhere.
             if constexpr (remove_from_cache) {
+                if (!matched) {
+                    continue;
+                }
                 const auto in_range2 = [&](const std::pair<u32, QueryLocation>& pair) {
                     return in_range(pair.first);
                 };
@@ -178,11 +188,6 @@ protected:
 
     ::Common::unordered_map<u64, ::Common::unordered_map<u32, QueryLocation>> cached_queries;
     std::mutex cache_mutex;
-
-    /// Releases not written to guest memory yet (PendingRelease). Written on the GPU thread,
-    /// erased by the fence that writes them.
-    ::Common::unordered_map<DAddr, u32> pending_releases;
-    std::mutex pending_releases_mutex;
 
     struct QueryCacheBaseImpl;
     friend struct QueryCacheBaseImpl;

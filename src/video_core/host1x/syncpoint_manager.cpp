@@ -11,21 +11,6 @@ namespace Tegra {
 
 namespace Host1x {
 
-// The puller's fence action and the 3D sync_info register take the syncpoint id from the guest's
-// command stream (24 and 16 bits): an id past the table indexed unrelated memory as an action list
-// and crashed in Increment.
-static bool IsValidSyncpoint(u32 syncpoint_id) {
-    if (syncpoint_id < SyncpointManager::NUM_MAX_SYNCPOINTS) [[likely]] {
-        return true;
-    }
-    static std::atomic_flag logged;
-    if (!logged.test_and_set()) {
-        LOG_ERROR(HW_GPU, "Syncpoint {} is out of range, increment dropped (logged once)",
-                  syncpoint_id);
-    }
-    return false;
-}
-
 SyncpointManager::ActionHandle SyncpointManager::RegisterAction(
     std::atomic<u32>& syncpoint, std::list<RegisteredAction>& action_storage, u32 expected_value,
     std::function<void()>&& action) {
@@ -46,19 +31,18 @@ SyncpointManager::ActionHandle SyncpointManager::RegisterAction(
         }
         ++it;
     }
-    return action_storage.emplace(it, expected_value, std::move(action));
+    return action_storage.emplace(it, expected_value, ++last_action_id, std::move(action))->id;
 }
 
 void SyncpointManager::DeregisterAction(std::list<RegisteredAction>& action_storage,
                                         const ActionHandle& handle) {
+    if (handle == 0) {
+        return;
+    }
     std::scoped_lock lk(guard);
 
-    // We want to ensure the iterator still exists prior to erasing it
-    // Otherwise, if an invalid iterator was passed in then it could lead to UB
-    // It is important to avoid UB in that case since the deregister isn't called from a locked
-    // context
     for (auto it = action_storage.begin(); it != action_storage.end(); it++) {
-        if (it == handle) {
+        if (it->id == handle) {
             action_storage.erase(it);
             return;
         }
@@ -74,14 +58,15 @@ void SyncpointManager::DeregisterHostAction(u32 syncpoint_id, const ActionHandle
 }
 
 void SyncpointManager::IncrementGuest(u32 syncpoint_id) {
-    if (!IsValidSyncpoint(syncpoint_id)) {
+    if (syncpoint_id >= NUM_MAX_SYNCPOINTS) {
+        LOG_ERROR(HW_GPU, "Ignoring increment of invalid syncpoint {:#x}", syncpoint_id);
         return;
     }
     Increment(syncpoints_guest[syncpoint_id], wait_guest_cv, guest_action_storage[syncpoint_id]);
 }
 
 void SyncpointManager::IncrementHost(u32 syncpoint_id) {
-    if (!IsValidSyncpoint(syncpoint_id)) {
+    if (syncpoint_id >= NUM_MAX_SYNCPOINTS) {
         return;
     }
     Increment(syncpoints_host[syncpoint_id], wait_host_cv, host_action_storage[syncpoint_id]);

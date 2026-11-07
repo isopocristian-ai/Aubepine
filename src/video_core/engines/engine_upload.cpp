@@ -28,27 +28,12 @@ void State::BindRasterizer(VideoCore::RasterizerInterface* rasterizer_) {
 void State::ProcessExec(const bool is_linear_) {
     write_offset = 0;
     flushed_offset = 0;
-    is_linear = is_linear_;
-    // Inline uploads carry their data in the command stream, so real ones are small. Garbage
-    // commands (a pushbuffer parse out of step) can ask for gigabytes, and allocating that threw
-    // std::bad_alloc on the GPU thread and aborted the emulator mid-race.
-    constexpr u64 MaxCopySize = 64ULL << 20;
-    const u64 size = u64{regs.line_length_in} * regs.line_count;
-    rejected = size > MaxCopySize;
-    if (rejected) {
-        LOG_ERROR(HW_GPU, "Ignoring an inline upload of {} lines of {} bytes", regs.line_count,
-                  regs.line_length_in);
-        copy_size = 0;
-        return;
-    }
-    copy_size = static_cast<u32>(size);
+    copy_size = regs.line_length_in * regs.line_count;
     inner_buffer.resize_destructive(copy_size);
+    is_linear = is_linear_;
 }
 
 void State::ProcessData(const u32 data, const bool is_last_call) {
-    if (rejected) {
-        return;
-    }
     const u32 sub_copy_size = (std::min)(4U, copy_size - write_offset);
     std::memcpy(&inner_buffer[write_offset], &data, sub_copy_size);
     write_offset += sub_copy_size;
@@ -68,9 +53,6 @@ void State::ProcessData(const u32 data, const bool is_last_call) {
 }
 
 void State::ProcessData(const u32* data, size_t num_data) {
-    if (rejected) {
-        return;
-    }
     if (native_partial && is_linear && regs.line_count == 1) {
         const auto count = std::min<size_t>(num_data * sizeof(u32), copy_size - write_offset);
         if (count) {

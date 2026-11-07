@@ -6,6 +6,7 @@
 
 #include <boost/container/static_vector.hpp>
 
+#include "common/settings.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/backend/spirv/emit_spirv_instructions.h"
 #include "shader_recompiler/backend/spirv/spirv_emit_context.h"
@@ -361,37 +362,35 @@ Id Emit(MethodPtrType sparse_ptr, MethodPtrType non_sparse_ptr, EmitContext& ctx
     return ctx.OpCompositeExtract(result_type, sample, 1U);
 }
 
-// Per-tap offsets (TLD4.PTP) only become ConstOffsets when they are constants. Ocarina of Time
-// computes them (its upscaler and forest passes), so they were dropped and every tap read the
-// footprint without its offset. Instead: one gather per tap with that tap's runtime offset
-// (ImageGatherExtended), keeping that tap's component, since component i of a gather only
-// depends on offset i. After zortos293/Lichii's per-tap offset work (8390649c0c).
-bool IsRuntimePtp(const IR::Value& offset, const IR::Value& offset2) {
-    if (offset2.IsEmpty() || offset.IsEmpty() || offset.IsImmediate() || offset2.IsImmediate()) {
+bool IsDynamicPtp(IR::Inst* inst, const IR::Value& offset, const IR::Value& offset2) {
+    if (offset2.IsEmpty() || offset.IsEmpty() ||
+        inst->GetAssociatedPseudoOperation(IR::Opcode::GetSparseFromOp)) {
         return false;
     }
-    return !offset.InstRecursive()->AreAllArgsImmediates() ||
-           !offset2.InstRecursive()->AreAllArgsImmediates();
+    const auto constant{[](const IR::Value& value) {
+        return value.IsImmediate() || value.InstRecursive()->AreAllArgsImmediates();
+    }};
+    return !constant(offset) || !constant(offset2);
 }
 
-template <typename Gather>
-Id GatherPerTap(EmitContext& ctx, IR::Inst* inst, Id result_type, Id scalar_type,
-                const IR::Value& offset, const IR::Value& offset2, Gather&& gather) {
-    const std::array<Id, 2> words{ctx.Def(offset), ctx.Def(offset2)};
-    std::array<Id, 4> taps{};
+// Per-tap offsets the IR could not fold to constants (ConstOffsets must be constant): one gather
+// per tap with a runtime Offset, keeping the i0,j0 texel (w) of each footprint, which is the
+// texel a per-tap gather returns for that tap.
+template <typename GatherFn>
+Id GatherDynamicPtp(EmitContext& ctx, bool is_integer, Id result_type, const IR::Value& offset,
+                    const IR::Value& offset2, GatherFn&& gather) {
+    const std::array packed{ctx.Def(offset), ctx.Def(offset2)};
+    const Id component_type{is_integer ? ctx.U32[1] : ctx.F32[1]};
+    std::array<Id, 4> texels;
     for (u32 tap = 0; tap < 4; ++tap) {
-        const Id word{words[tap / 2]};
+        const Id vector{packed[tap / 2]};
         const u32 first{(tap % 2) * 2};
-        const Id x{ctx.OpBitcast(ctx.S32[1], ctx.OpCompositeExtract(ctx.U32[1], word, first))};
-        const Id y{ctx.OpBitcast(ctx.S32[1], ctx.OpCompositeExtract(ctx.U32[1], word, first + 1))};
-        const Id texels{Decorate(ctx, inst, gather(ctx.OpCompositeConstruct(ctx.S32[2], x, y)))};
-        taps[tap] = ctx.OpCompositeExtract(scalar_type, texels, tap);
+        const Id x{ctx.OpBitcast(ctx.S32[1], ctx.OpCompositeExtract(ctx.U32[1], vector, first))};
+        const Id y{ctx.OpBitcast(ctx.S32[1], ctx.OpCompositeExtract(ctx.U32[1], vector, first + 1))};
+        const Id tap_offset{ctx.OpCompositeConstruct(ctx.S32[2], x, y)};
+        texels[tap] = ctx.OpCompositeExtract(component_type, gather(tap_offset), 3U);
     }
-    if (IR::Inst* const sparse{inst->GetAssociatedPseudoOperation(IR::Opcode::GetSparseFromOp)}) {
-        sparse->SetDefinition(ctx.true_value);
-        sparse->Invalidate();
-    }
-    return ctx.OpCompositeConstruct(result_type, taps);
+    return ctx.OpCompositeConstruct(result_type, std::span<const Id>{texels.data(), texels.size()});
 }
 
 Id IsScaled(EmitContext& ctx, const IR::Value& index, Id member_index, u32 base_index) {
@@ -622,6 +621,11 @@ Id EmitImageSampleExplicitLod(EmitContext& ctx, IR::Inst* inst, const IR::Value&
     Id result = Emit(&EmitContext::OpImageSparseSampleExplicitLod,
                      &EmitContext::OpImageSampleExplicitLod, ctx, inst, result_type,
                      Texture(ctx, info, index), coords, operands.Mask(), operands.Span());
+#ifdef __ANDROID__
+    if (!is_integer && Settings::values.fix_bloom_effects.GetValue()) {
+        result = ctx.OpVectorTimesScalar(ctx.F32[4], result, ctx.Const(0.98f));
+    }
+#endif
     return is_integer ? ctx.OpBitcast(ctx.F32[4], result) : result;
 }
 
@@ -663,16 +667,15 @@ Id EmitImageGather(EmitContext& ctx, IR::Inst* inst, const IR::Value& index, Id 
     if (ctx.profile.need_gather_subpixel_offset) {
         coords = ImageGatherSubpixelOffset(ctx, info, TextureImage(ctx, info, index), coords);
     }
-    if (IsRuntimePtp(offset, offset2)) {
+    if (IsDynamicPtp(inst, offset, offset2)) {
         const Id texture{Texture(ctx, info, index)};
         const Id component{ctx.Const(info.gather_component)};
-        const Id color{GatherPerTap(
-            ctx, inst, result_type, is_integer ? ctx.U32[1] : ctx.F32[1], offset, offset2,
-            [&](Id tap_offset) {
-                const std::array operand{tap_offset};
-                return ctx.OpImageGather(result_type, texture, coords, component,
-                                         spv::ImageOperandsMask::Offset, operand);
-            })};
+        const Id color{GatherDynamicPtp(ctx, is_integer, result_type, offset, offset2, [&](Id tap_offset) {
+            return Decorate(ctx, inst,
+                            ctx.OpImageGather(result_type, texture, coords, component,
+                                              spv::ImageOperandsMask::Offset,
+                                              std::span<const Id>{&tap_offset, 1}));
+        })};
         return is_integer ? ctx.OpBitcast(ctx.F32[4], color) : color;
     }
     const ImageOperands operands(ctx, offset, offset2);
@@ -691,15 +694,14 @@ Id EmitImageGatherDref(EmitContext& ctx, IR::Inst* inst, const IR::Value& index,
     if (ctx.profile.need_gather_subpixel_offset) {
         coords = ImageGatherSubpixelOffset(ctx, info, TextureImage(ctx, info, index), coords);
     }
-    if (IsRuntimePtp(offset, offset2)) {
+    if (IsDynamicPtp(inst, offset, offset2)) {
         const Id texture{Texture(ctx, info, index)};
-        const Id color{GatherPerTap(
-            ctx, inst, result_type, is_integer ? ctx.U32[1] : ctx.F32[1], offset, offset2,
-            [&](Id tap_offset) {
-                const std::array operand{tap_offset};
-                return ctx.OpImageDrefGather(result_type, texture, coords, dref,
-                                             spv::ImageOperandsMask::Offset, operand);
-            })};
+        const Id color{GatherDynamicPtp(ctx, is_integer, result_type, offset, offset2, [&](Id tap_offset) {
+            return Decorate(ctx, inst,
+                            ctx.OpImageDrefGather(result_type, texture, coords, dref,
+                                                  spv::ImageOperandsMask::Offset,
+                                                  std::span<const Id>{&tap_offset, 1}));
+        })};
         return is_integer ? ctx.OpBitcast(ctx.F32[4], color) : color;
     }
     const ImageOperands operands(ctx, offset, offset2);

@@ -32,9 +32,6 @@
 #include "core/gpu_dirty_memory_manager.h"
 #include "core/hardware_properties.h"
 #include "core/hle/kernel/k_page_table.h"
-#ifdef HAS_HYPERVISOR
-#include "core/arm/hypervisor/hv_vm.h"
-#endif
 #include "core/hle/kernel/k_process.h"
 #include "core/memory.h"
 #include "video_core/gpu.h"
@@ -48,14 +45,6 @@ u32& UnmappedReadFlag() {
     thread_local u32 flag{};
     return flag;
 }
-
-#ifdef HAS_HYPERVISOR
-/// The hypervisor VM when it mirrors this page table, so its stage-1 tables follow every change.
-static inline Core::Hv::Vm* HypervisorFor(const Common::PageTable& table) {
-    auto& vm = Core::Hv::Vm::Get();
-    return vm.IsAttached(table) ? &vm : nullptr;
-}
-#endif
 
 static inline bool AddressSpaceContains(const Common::PageTable& table, const Common::ProcessAddress addr, const std::size_t size) {
     const Common::ProcessAddress max_addr = 1ULL << table.GetAddressSpaceBits();
@@ -83,20 +72,6 @@ struct Memory::Impl {
 #else
         host_buffer = std::addressof(system.DeviceMemory().buffer);
 #endif
-
-#ifdef HAS_HYPERVISOR
-        // EDEN_NX2_HYPERVISOR=1: application code runs natively in a VM whose page tables mirror
-        // this one from the start, so every mapping below reaches them.
-        // (The process's 64-bit flag is only set after this runs; a 64-bit address space,
-        // 36 or 39 bits, tells the same.)
-        if (Core::Hv::IsRequested() && process.IsApplication() &&
-            current_page_table->GetAddressSpaceBits() >= 36 && system.IsMulticore()) {
-            auto& buffer = system.DeviceMemory().buffer;
-            Core::Hv::Vm::Get().Attach(*current_page_table,
-                                       current_page_table->GetAddressSpaceBits(),
-                                       buffer.BackingBasePointer(), buffer.BackingSize());
-        }
-#endif
     }
 
     void MapMemoryRegion(Common::PageTable& page_table, Common::ProcessAddress base, u64 size,
@@ -108,11 +83,6 @@ struct Memory::Impl {
                    GetInteger(target));
         MapPages(page_table, base / YUZU_PAGESIZE, size / YUZU_PAGESIZE, target,
                  Common::PageType::Memory);
-#ifdef HAS_HYPERVISOR
-        if (auto* vm = HypervisorFor(page_table)) {
-            vm->Map(GetInteger(base), size, GetInteger(target), perms);
-        }
-#endif
 
         if (current_page_table->fastmem_arena) {
             host_buffer->Map(GetInteger(base), GetInteger(target) - DramMemoryMap::Base, size, perms, separate_heap);
@@ -125,11 +95,6 @@ struct Memory::Impl {
         ASSERT_MSG((base & YUZU_PAGEMASK) == 0, "non-page aligned base: {:016X}", GetInteger(base));
         MapPages(page_table, base / YUZU_PAGESIZE, size / YUZU_PAGESIZE, 0,
                  Common::PageType::Unmapped);
-#ifdef HAS_HYPERVISOR
-        if (auto* vm = HypervisorFor(page_table)) {
-            vm->Unmap(GetInteger(base), size);
-        }
-#endif
 
         if (current_page_table->fastmem_arena) {
             host_buffer->Unmap(GetInteger(base), size, separate_heap);
@@ -140,12 +105,6 @@ struct Memory::Impl {
                        Common::MemoryPermission perms) {
         ASSERT_MSG((size & YUZU_PAGEMASK) == 0, "non-page aligned size: {:016X}", size);
         ASSERT_MSG((vaddr & YUZU_PAGEMASK) == 0, "non-page aligned base: {:016X}", vaddr);
-
-#ifdef HAS_HYPERVISOR
-        if (auto* vm = HypervisorFor(page_table)) {
-            vm->Protect(vaddr, size, perms);
-        }
-#endif
 
         if (!current_page_table->fastmem_arena) {
             return;
@@ -209,6 +168,24 @@ struct Memory::Impl {
             const u32 b{Read16(addr + sizeof(u16))};
             return (b << 16) | a;
         }
+    }
+
+    bool Read32Acquire(const Common::ProcessAddress addr, u32& value) {
+        value = 0;
+        if (!current_page_table || (addr & 3) != 0) {
+            return false;
+        }
+        auto* pointer = GetPointerImpl(GetInteger(addr), [] {}, [&] {
+            HandleRasterizerDownload(GetInteger(addr), sizeof(u32));
+        });
+        if (!pointer) {
+            return false;
+        }
+        u32_le actual{};
+        static_cast<void>(Common::AtomicCompareAndSwap(reinterpret_cast<u32_le*>(pointer),
+                                                     u32_le{0}, u32_le{0}, actual));
+        value = actual;
+        return true;
     }
 
     u64 Read64(const Common::ProcessAddress addr) {
@@ -522,15 +499,6 @@ struct Memory::Impl {
             return;
         }
 
-#ifdef HAS_HYPERVISOR
-        // Native code writes guest memory directly: protect what the GPU caches track, as fastmem
-        // does, so those writes fault and reach the caches.
-        if (auto* vm = HypervisorFor(*current_page_table)) {
-            vm->MarkCached(vaddr, size, cached,
-                           cached && Settings::values.use_reactive_flushing.GetValue());
-        }
-#endif
-
         if (current_page_table->fastmem_arena) {
             Common::MemoryPermission perm{};
             // EDEN_NX2_NO_REACTIVE=1 drops the read traps on Switch 2 programs. Opt-in: without
@@ -649,17 +617,27 @@ struct Memory::Impl {
         for (u64 page = vaddr >> YUZU_PAGEBITS; page != page_end; ++page) {
             const bool cached = std::as_const(current_page_table->entries)[page].Type() ==
                                 Common::PageType::RasterizerCachedMemory;
+            armed_read_trap_count.fetch_add(1, std::memory_order_relaxed);
             if (!cached || !armed_read_traps.insert(page).second) {
+                armed_read_trap_count.fetch_sub(1, std::memory_order_relaxed);
                 protect_run();
                 continue;
             }
-            armed_read_trap_count.fetch_add(1, std::memory_order_relaxed);
             if (run_pages == 0) {
                 run_begin = page;
             }
             ++run_pages;
         }
         protect_run();
+    }
+
+    bool ReadTrapArmed(u64 vaddr, u64 size) {
+        if (armed_read_trap_count.load(std::memory_order_relaxed) == 0) {
+            return false;
+        }
+        std::scoped_lock lk{read_trap_mutex};
+        const auto it = armed_read_traps.lower_bound(vaddr >> YUZU_PAGEBITS);
+        return it != armed_read_traps.end() && *it <= ((vaddr + size - 1) >> YUZU_PAGEBITS);
     }
 
     /// Takes read permission away again from armed pages that were just cached again.
@@ -830,7 +808,9 @@ struct Memory::Impl {
             }
             ++UnmappedReadFlag();
         }, [&]() {
-            HandleRasterizerDownload(addr, sizeof(T));
+            if (!ReadTrapsEnabled() || ReadTrapArmed(addr & 0xffffffffffffULL, sizeof(T))) {
+                HandleRasterizerDownload(addr, sizeof(T));
+            }
         }); ptr) [[likely]] {
             // It may be tempting to rewrite this particular section to use "reinterpret_cast";
             // afterall, it's trivially copyable so surely it can be copied ov- Alignment.
@@ -883,11 +863,32 @@ struct Memory::Impl {
         return true;
     }
 
+    /// A rasterizer-cached page whose host pointer is outside the emulated physical memory has no
+    /// device address to flush or invalidate (its lookup used to read far out of bounds).
+    void ReportForeignPointer(VAddr v_address, const u8* p) const {
+        static std::atomic<u32> reported{};
+        if (reported.fetch_add(1, std::memory_order_relaxed) >= 16) {
+            return;
+        }
+        const auto raw =
+            current_page_table->entries[(v_address & 0xffffffffffffULL) >> YUZU_PAGEBITS].Raw();
+        LOG_ERROR(HW_Memory,
+                  "Rasterizer access at {:#x}: host pointer {} is outside the emulated physical "
+                  "memory at {} (page type {}, block {})",
+                  v_address, fmt::ptr(p),
+                  fmt::ptr(system.DeviceMemory().buffer.BackingBasePointer()),
+                  static_cast<u32>(raw.type), static_cast<u32>(raw.block));
+    }
+
     void HandleRasterizerDownload(VAddr v_address, size_t size) {
         const auto* p = GetPointerImpl(
             v_address, []() {}, []() {});
         if (!gpu_device_memory) [[unlikely]] {
             gpu_device_memory = &system.Host1x().MemoryManager();
+        }
+        if (!gpu_device_memory->IsPhysicalPointer(p)) [[unlikely]] {
+            ReportForeignPointer(v_address, p);
+            return;
         }
         const size_t core = system.GetCurrentHostThreadID();
         if (core >= Core::Hardware::NUM_CPU_CORES) {
@@ -928,6 +929,10 @@ struct Memory::Impl {
                                      sys_core); // any other calls threads go to syscore.
         if (!gpu_device_memory) [[unlikely]] {
             gpu_device_memory = &system.Host1x().MemoryManager();
+        }
+        if (!gpu_device_memory->IsPhysicalPointer(p)) [[unlikely]] {
+            ReportForeignPointer(v_address, p);
+            return;
         }
         // Guard on sys_core;
         if (core == sys_core) [[unlikely]] {
@@ -1050,6 +1055,9 @@ bool Memory::IsValidVirtualAddress(const Common::ProcessAddress vaddr) const {
 
 bool Memory::IsValidVirtualAddressRange(Common::ProcessAddress base, u64 size) const {
     Common::ProcessAddress end = base + size;
+    if (end < base) {
+        return false;
+    }
     Common::ProcessAddress page = Common::AlignDown(GetInteger(base), YUZU_PAGESIZE);
 
     for (; page < end; page += YUZU_PAGESIZE) {
@@ -1083,6 +1091,10 @@ u16 Memory::Read16(const Common::ProcessAddress addr) {
 
 u32 Memory::Read32(const Common::ProcessAddress addr) {
     return impl->Read32(addr);
+}
+
+bool Memory::Read32Acquire(const Common::ProcessAddress addr, u32& value) {
+    return impl->Read32Acquire(addr, value);
 }
 
 u64 Memory::Read64(const Common::ProcessAddress addr) {
