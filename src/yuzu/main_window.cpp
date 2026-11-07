@@ -2073,16 +2073,30 @@ void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletPa
 
     if (title_id == Settings::MarioKartWorldProgramId && !asked_recommended_mkw_settings) {
         asked_recommended_mkw_settings = true;
-        use_recommended_mkw_settings =
-            QMessageBox::question(
-                this, tr("Recommended Mario Kart World settings"),
+        // The answer can be remembered (UISettings mkw_recommended_choice: 0 ask, 1 yes, 2 no).
+        auto& choice = UISettings::values.mkw_recommended_choice;
+        if (choice.GetValue() == 0) {
+            QMessageBox box(
+                QMessageBox::Question, tr("Recommended Mario Kart World settings"),
                 tr("Use the recommended settings for Mario Kart World?\n\n"
                    "Vulkan, 1x resolution, GPU Fast, asynchronous shaders, BC3, conservative VRAM, "
                    "reactive flushing off, FIFO Relaxed VSync, handheld mode, ScaleForce, and "
                    "FXAA.\n\n"
-                   "They apply to Mario Kart World until Lichii is closed. Your saved settings "
-                   "are not changed."),
-                QMessageBox::Yes | QMessageBox::No, QMessageBox::No) == QMessageBox::Yes;
+                   "They apply to Mario Kart World until the emulator is closed. Your saved "
+                   "settings are not changed."),
+                QMessageBox::Yes | QMessageBox::No, this);
+            box.setDefaultButton(QMessageBox::No);
+            box.setEscapeButton(QMessageBox::No);
+            auto* remember = new QCheckBox(tr("Don't ask again"), &box);
+            box.setCheckBox(remember);
+            use_recommended_mkw_settings = box.exec() == QMessageBox::Yes;
+            if (remember->isChecked()) {
+                choice.SetValue(use_recommended_mkw_settings ? 1 : 2);
+                config->SaveAllValues();
+            }
+        } else {
+            use_recommended_mkw_settings = choice.GetValue() == 1;
+        }
         LOG_INFO(Config, "MKW recommended settings accepted: {}", use_recommended_mkw_settings);
     }
     if (Settings::ApplyMarioKartWorldPreset(Settings::values, title_id,
