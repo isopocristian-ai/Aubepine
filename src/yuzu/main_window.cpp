@@ -1939,7 +1939,7 @@ bool MainWindow::LoadROM(const QString& filename, Service::AM::FrontendAppletPar
         case Core::SystemResultStatus::ErrorMemoryAllocation:
             QMessageBox::critical(
                 this, tr("Not enough memory to start the game"),
-                tr("Lichii could not allocate the game's memory. Close other applications and "
+                tr("Aubépine could not allocate the game's memory. Close other applications and "
                    "check that your system has enough available memory and paging-file space, "
                    "then try again."));
             break;
@@ -2035,7 +2035,7 @@ void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletPa
     if (close_pending) {
         return;
     }
-    LOG_INFO(Frontend, "Lichii starting...");
+    LOG_INFO(Frontend, "Aubépine starting...");
     report_session.reset();
     game_list->SetReportableProgramId(0);
 
@@ -2204,7 +2204,7 @@ void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletPa
         }
         session.mods = CompatibilityReporting::SummarizeEnabledAddons(mods);
         session.updates = CompatibilityReporting::SummarizeEnabledAddons(updates);
-        session.build = QStringLiteral("Lichii %1 (%2)")
+        session.build = QStringLiteral("Aubépine %1 (%2)")
                             .arg(QString::fromUtf8(Common::g_build_version),
                                  QString::fromUtf8(Common::g_scm_rev).left(12));
 #ifdef ARCHITECTURE_x86_64
@@ -5232,7 +5232,7 @@ void MainWindow::OnCheckGraphicsBackend() {
         UISettings::values.gui_force_x11.SetValue(true);
         GraphicsBackend::SetForceX11(true);
         QMessageBox::information(this, tr("Restart Required"),
-                                 tr("Restart Lichii to apply the X11 backend."));
+                                 tr("Restart Aubépine to apply the X11 backend."));
     }
 }
 #endif
@@ -5351,8 +5351,8 @@ bool MainWindow::ConfirmClose() {
         UISettings::values.confirm_before_stopping.GetValue() == ConfirmStop::Ask_Based_On_Game)
         return true;
 
-    const auto text = tr("Are you sure you want to close Lichii?");
-    return question(this, tr("Lichii"), text);
+    const auto text = tr("Are you sure you want to close Aubépine?");
+    return question(this, tr("Aubépine"), text);
 }
 
 void MainWindow::closeEvent(QCloseEvent* event) {
@@ -5458,7 +5458,7 @@ bool MainWindow::ConfirmChangeGame() {
 
     // Use custom question to link controller navigation
     return question(
-        this, tr("Lichii"),
+        this, tr("Aubépine"),
         tr("Are you sure you want to stop the emulation? Any unsaved progress will be lost."),
         QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
 }
@@ -5467,10 +5467,10 @@ bool MainWindow::ConfirmForceLockedExit() {
     if (QtCommon::emu_thread == nullptr)
         return true;
 
-    const auto text = tr("The currently running application has requested Lichii to not exit.\n\n"
+    const auto text = tr("The currently running application has requested Aubépine to not exit.\n\n"
                          "Would you like to bypass this and exit anyway?");
 
-    return question(this, tr("Lichii"), text);
+    return question(this, tr("Aubépine"), text);
 }
 
 void MainWindow::RequestGameExit() {
