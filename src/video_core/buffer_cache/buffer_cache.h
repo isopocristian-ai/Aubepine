@@ -2944,7 +2944,15 @@ Binding BufferCache<P>::StorageBufferBinding(GPUVAddr ssbo_addr, u32 cbuf_index,
         return NULL_BINDING;
     }
 
-    const bool reads_size_word = !(table_pointer && !is_written) && !native_pointer;
+    // Native pointers take the packed size word after them when it looks like one (Aubépine):
+    // bound to their whole mapping, Kirby Air Riders lost the device about 90 s in on AMD.
+    // EDEN_NX2_NATIVE_MAPPING_SIZE=1 binds them to their mapping as upstream does.
+    static const bool native_mapping_size = [] {
+        const char* value = std::getenv("EDEN_NX2_NATIVE_MAPPING_SIZE");
+        return value != nullptr && value[0] == '1';
+    }();
+    const bool reads_size_word =
+        !(table_pointer && !is_written) && (!native_pointer || !native_mapping_size);
     const u64 next_qword = reads_size_word ? gpu_memory->Read<u64>(ssbo_addr + 8) : 0;
     const u32 alignment = runtime.GetStorageBufferAlignment();
     struct CachedBinding {
@@ -2992,7 +3000,7 @@ Binding BufferCache<P>::StorageBufferBinding(GPUVAddr ssbo_addr, u32 cbuf_index,
             // A native (Switch 2) compute program's pointer is bare: the word after it is another
             // parameter (a dimension, stride or texture handle), not an NVN buffer size. Taking it
             // as one bound Fortune's Weave's DLSS input features to 266 bytes and dropped the rest.
-            if (native_pointer) {
+            if (native_pointer && native_mapping_size) {
                 return (std::min)(memory_layout_size, static_cast<u32>(8_MiB));
             }
             const u32 packed_size = static_cast<u32>(next_qword);
