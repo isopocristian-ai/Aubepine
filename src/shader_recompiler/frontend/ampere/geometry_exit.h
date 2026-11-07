@@ -171,6 +171,13 @@ GeometryExitEnvelope AnalyzeGeometryExit(const Code& code) {
             read_sources(true);
             write_register(bits(index, 16, 8));
             write_predicate(bits(index, 81, 3));
+        } else if (opcode == 0x321) {
+            // ALD Rd.. (1-4 components, bits 74-75), [Ra], Rb: loads attributes of the vertex in
+            // operand b (Yoshi and the Mysterious Book's geometry programs).
+            read_register(bits(index, 24, 8));
+            read_register(bits(index, 32, 8));
+            const u32 components = bits(index, 74, 2) + 1;
+            for (u32 i = 0; i < components; ++i) write_register(bits(index, 16, 8) + i);
         } else if (opcode == 0x322) {
             // AST: stores 1-4 components from operand b for the vertex in c; writes nothing.
             const u32 value = bits(index, 32, 8), components = bits(index, 74, 2) + 1;
