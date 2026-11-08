@@ -171,6 +171,11 @@ GeometryExitEnvelope AnalyzeGeometryExit(const Code& code) {
             read_sources(true);
             write_register(bits(index, 16, 8));
             write_predicate(bits(index, 81, 3));
+        } else if (family == 0x019 && form != 0) {
+            // SHF Rd, Ra, b, Rc: one result (Kirby Air Riders' geometry programs use the
+            // immediate form, 0x819).
+            read_sources(true);
+            write_register(bits(index, 16, 8));
         } else if (opcode == 0x321) {
             // ALD Rd.. (1-4 components, bits 74-75), [Ra], Rb: loads attributes of the vertex in
             // operand b (Yoshi and the Mysterious Book's geometry programs).
