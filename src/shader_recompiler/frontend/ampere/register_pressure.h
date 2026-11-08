@@ -242,6 +242,30 @@ inline RegisterPressure PrepareRegisterPressure(const Instruction& input, u32 re
         operand(24);
         break;
     }
+    case 0xb60:
+    case 0xf60: {
+        // TEX (0xf60: handle in a uniform register): the coordinates, then the LOD/bias, offsets
+        // and depth reference, packed over Ra and Rb as the lowering reads them (up to four as
+        // halves, five or more as 4 + n); the results in Rd (two, or all without a second
+        // destination) and the second destination. Kirby Air Riders' menu and race compute
+        // programs sample into R243 with the coordinates' last value there too.
+        constexpr std::array<u32, 8> coordinate_count{1, 2, 3, 3, 2, 3, 0, 4};
+        const u32 lod = input.Bits(87, 3);
+        const bool has_lod = lod == 2 || lod == 3 || lod == 6 || lod == 7;
+        const u32 count = coordinate_count[input.Bits(61, 3)] + (has_lod ? 1U : 0U) +
+                          input.Bits(76, 1) + input.Bits(78, 1);
+        const u32 in_a = count <= 4 ? (count + 1) / 2 : 4;
+        const u32 components = static_cast<u32>(std::popcount(input.Bits(72, 4)));
+        const bool split = input.Bits(64, 8) != 255;
+        const bool half = input.Bits(79, 1) != 0;
+        const u32 first = half ? 1U : split ? (std::min)(components, 2U) : components;
+        const u32 second = half ? 1U : components - (std::min)(components, 2U);
+        if (first != 0) operand(16, first);
+        if (split && second != 0) operand(64, second);
+        if (in_a != 0) operand(24, in_a);
+        if (count > in_a) operand(32, count - in_a);
+        break;
+    }
     case 0x381:
     case 0x386:
     case 0x981:
