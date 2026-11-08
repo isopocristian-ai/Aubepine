@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdlib>
 #include <vector>
 #include <fmt/ranges.h>
 
@@ -31,6 +32,21 @@ using VideoCore::Surface::SurfaceType;
 
 constexpr u32 RescaleHeightThreshold = 288;
 constexpr u32 DownscaleHeightThreshold = 512;
+
+namespace {
+/// 2D images with a mip chain used to stay at the guest size. Kirby Air Riders renders its race
+/// into mip 0 of such chains (R16G16 and RGBA16F, 2048x1152, 12 levels) with the depth buffer
+/// bound: at 2x that depth was scaled down and back up every frame, which keeps one depth sample
+/// in four, and the main pass (depth test EQUAL) then drew a pixel in four (dots, dark Kirby).
+/// EDEN_NX2_RESCALE_MIPS=0 restores the old rule.
+[[nodiscard]] bool RescaleMipChains() {
+    static const bool enabled = [] {
+        const char* const value = std::getenv("EDEN_NX2_RESCALE_MIPS");
+        return value == nullptr || value[0] != '0';
+    }();
+    return enabled;
+}
+} // Anonymous namespace
 
 ImageInfo::ImageInfo(const TICEntry& config) noexcept {
     forced_flushed = config.IsPitchLinear() && !Settings::values.use_reactive_flushing.GetValue();
@@ -147,7 +163,10 @@ ImageInfo::ImageInfo(const TICEntry& config) noexcept {
         // FIXME: Call this without passing *this
         layer_stride = CalculateLayerStride(*this);
         maybe_unaligned_layer_stride = CalculateLayerSize(*this);
-        rescaleable &= (block.depth == 0) && resources.levels == 1;
+        const bool single_level_or_2d_chain =
+            resources.levels == 1 ||
+            (RescaleMipChains() && type == ImageType::e2D && resources.layers == 1);
+        rescaleable &= (block.depth == 0) && single_level_or_2d_chain;
         rescaleable &= size.height > RescaleHeightThreshold ||
                            GetFormatType(format) != SurfaceType::ColorTexture;
         downscaleable = size.height > DownscaleHeightThreshold;
