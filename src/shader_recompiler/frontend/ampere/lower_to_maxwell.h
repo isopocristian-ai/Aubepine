@@ -2496,6 +2496,31 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             }
             break;
         }
+        case 0x364: { // TLD4.B, 2D without offsets or depth compare: (x, y | handle), as 0x361 packs TEX.B (Yoshi docked).
+            const u32 mask = insn.Bits(72, 4), second_dest = insn.Bits(64, 8);
+            const u32 source_a = insn.Bits(24, 8), source_b = insn.Bits(32, 8);
+            const u32 components = static_cast<u32>(std::popcount(mask));
+            const u32 register_limit = uses_uniform_bank ? high_uniform_base : 246U;
+            const u32 first_count = second_dest == 255 ? components : std::min(components, 2U);
+            if (insn.Bits(61, 3) != 1 || insn.Bits(59, 2) != 3 || insn.Bits(40, 19) || insn.Bits(76, 5) ||
+                insn.Bits(81, 3) != 7 || insn.Bits(89, 1) || insn.Bits(91, 1) || mask == 0 ||
+                source_a == 255 || source_a + 1 >= register_limit || source_b >= register_limit ||
+                dest == 255 || dest + first_count > register_limit ||
+                (second_dest != 255 && second_dest + (components - first_count) > register_limit))
+                return fail(index, "native bindless texture gather mode");
+            emit(0x5c98000000000000ULL | predicate | 250 | (u64{15} << 39) | (u64{source_a} << 20));
+            emit(0x5c98000000000000ULL | predicate | 251 | (u64{15} << 39) | (u64{source_a + 1} << 20));
+            emit(0x5c98000000000000ULL | predicate | 246 | (u64{15} << 39) | (u64{source_b} << 20));
+            emit(0xdec0000000000000ULL | predicate | 250 | (u64{250} << 8) | (u64{246} << 20) |
+                 (u64{2} << 28) | (u64{mask} << 31) | (u64{insn.Bits(87, 2)} << 38) |
+                 (u64{insn.Bits(90, 1)} << 49) | (u64{7} << 51));
+            const bool split = second_dest != 255;
+            for (u32 i = 0; i < components; ++i) {
+                const u32 target = !split || i < 2 ? static_cast<u32>(dest) + i : second_dest + (i - 2);
+                emit(0x5c98000000000000ULL | predicate | target | (u64{15} << 39) | (u64{250 + i} << 20));
+            }
+            break;
+        }
         case 0xb63: case 0xf63: { // TLD4 (gather); component at bits 87-88.
             // 0xf63: the handle in a uniform register (bit 91), Maxwell TLD4.B with the handle in Rb.
             const bool bindless = opcode == 0xf63;
@@ -2545,7 +2570,8 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                           dest >= register_limit ||
                           // Up to two taps pack into dest alone (mask 3 with no second register).
                           (std::popcount(mask) > 2 && second_dest >= register_limit))) ||
-                (offsets && (bindless || source_b == 255 || (source_a != 255 && source_a >= 245))) ||
+                (offsets && ((bindless && array) || source_b == 255 || source_b >= register_limit ||
+                             (source_a != 255 && source_a >= 245))) ||
                 (per_tap && (bindless || depth || insn.Bits(80, 1) || insn.Bits(91, 1))) ||
                 insn.Bits(89, 1) || mask == 0 ||
                 (bindless ? (handle >= 246 || insn.Bits(46, 13) || !insn.Bits(91, 1))
@@ -2679,10 +2705,14 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                      (u64{per_tap ? 2U : offsets ? 1U : 0U} << 36) | (u64{insn.Bits(87, 2)} << 38) |
                      (u64{insn.Bits(90, 1)} << 49) | (u64{depth} << 50) | (u64{7} << 51));
             } else if (bindless) {
+                // TLD4.B meta registers: the handle, then the offset (Yoshi gathers with an
+                // offset through a uniform handle).
+                if (offsets)
+                    emit(0x5c98000000000000ULL | predicate | 247 | (u64{15} << 39) | (u64{source_b} << 20));
                 emit(0x5c98000000000000ULL | predicate | 246 | (u64{15} << 39) | (u64{handle} << 20));
                 emit(0xdec0000000000000ULL | predicate | 250 | (u64{250} << 8) | (u64{246} << 20) |
-                     (u64{array ? 3U : 2U} << 28) | (u64{mask} << 31) | (u64{insn.Bits(87, 2)} << 38) |
-                     (u64{insn.Bits(90, 1)} << 49) | (u64{7} << 51));
+                     (u64{array ? 3U : 2U} << 28) | (u64{mask} << 31) | (u64{offsets ? 1U : 0U} << 36) |
+                     (u64{insn.Bits(87, 2)} << 38) | (u64{insn.Bits(90, 1)} << 49) | (u64{7} << 51));
             } else {
             if (offsets || depth)
                 emit(0x5c98000000000000ULL | predicate | 246 | (u64{15} << 39) | (u64{source_b} << 20));
