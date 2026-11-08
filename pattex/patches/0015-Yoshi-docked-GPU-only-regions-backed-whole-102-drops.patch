@@ -1,0 +1,69 @@
+From 613136f3a96898dbe2eb5d673ac733cb29b7df6b Mon Sep 17 00:00:00 2001
+From: pattex67 <33281022+pattex67@users.noreply.github.com>
+Date: Sun, 8 Nov 2026 13:51:31 +0100
+Subject: [PATCH 15/18] Yoshi docked: GPU-only regions backed whole, 102 drops
+ the caches' GPU writes as an unmap
+
+Ported from our PokeDinner-based tree (7999db4eb2, dc931fb5e9, 9eebeeb2e6):
+- Yoshi and the Mysterious Book's GPU-only regions are backed whole: backed as
+  written, its shaders read as zeros right after the intro movie and the game
+  aborted (2162-0001). EDEN_NX2_GPU_ONLY_LAZY=1 brings lazy backing back.
+- nx2:gpu 102 drops the caches' state for the destroyed memory in GPU order
+  (as an unmap, which downloads nothing): the game reuses it as heap and
+  Unreal's allocator found overwritten block headers.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/core/hle/service/nx2_gsv.h | 27 +++++++++++++++++++++++----
+ 1 file changed, 23 insertions(+), 4 deletions(-)
+
+diff --git a/src/core/hle/service/nx2_gsv.h b/src/core/hle/service/nx2_gsv.h
+index f968e2f6ec..88b6e6d51c 100644
+--- a/src/core/hle/service/nx2_gsv.h
++++ b/src/core/hle/service/nx2_gsv.h
+@@ -608,6 +608,18 @@ private:
+                       address, size, w[3]);
+             if (size != 0) {
+                 Nvidia::Devices::Nx2GpuMemoryRegistry::Get().Unmap(address, size);
++                // The caches may still hold GPU writes to this memory and copy them back on a
++                // later CPU read, over the heap data the game puts there: Yoshi's Unreal allocator
++                // found a block header overwritten and aborted (2162-0001). Drop them once the GPU
++                // thread has run the work queued so far, before the slot event lets the game go on,
++                // as an unmap: a plain invalidation first downloads the GPU-written bytes of the
++                // pages it touches, which would write them over the heap instead.
++                if (const auto device =
++                        Nvidia::Devices::Nx2GpuMemoryRegistry::Get().DeviceAddressOf(address)) {
++                    system.GPU().RunInOrder([&gpu = system.GPU(), device = *device, size] {
++                        gpu.Renderer().ReadRasterizer()->UnmapMemory(device, size);
++                    });
++                }
+             }
+             if (size == 0x2000) {
+                 Tegra::Nx2RemoveSemaphoreRegion(address);
+@@ -1079,12 +1091,19 @@ private:
+     }
+ 
+     // EDEN_NX2_GPU_ONLY_LAZY=0 backs GPU-only regions whole, as before.
+-    static bool LazyGpuOnlyRegions() {
+-        static const bool lazy = [] {
++    // Yoshi and the Mysterious Book docked: with its large regions backed as written, shaders read
++    // as zeros right after the intro movie and the game aborts (2162-0001) or draws an empty
++    // world; backed whole it plays. EDEN_NX2_GPU_ONLY_LAZY=1 turns lazy backing back on for it.
++    bool LazyGpuOnlyRegions() const {
++        static const int forced = [] {
+             const char* value = std::getenv("EDEN_NX2_GPU_ONLY_LAZY");
+-            return value == nullptr || value[0] != '0';
++            return value == nullptr ? -1 : (value[0] != '0' ? 1 : 0);
+         }();
+-        return lazy;
++        if (forced >= 0) {
++            return forced == 1;
++        }
++        constexpr u64 YoshiMysteriousBookProgramId = 0x0400245021D2C000ULL;
++        return system.GetApplicationProcessProgramID() != YoshiMysteriousBookProgramId;
+     }
+ 
+     static constexpr u32 SparseRegionFlag = 0x200; ///< Word 7 of 214 (0x60c arrays, 0xa0c pools)
+-- 
+2.51.0.windows.1
+

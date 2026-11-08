@@ -1,0 +1,290 @@
+From d6195d1e20234c224d47ebd17ee547f3f739c1b2 Mon Sep 17 00:00:00 2001
+From: pattex67 <33281022+pattex67@users.noreply.github.com>
+Date: Sun, 8 Nov 2026 13:54:09 +0100
+Subject: [PATCH 16/18] Yoshi: recheck rejected programs when their bytes
+ change; TLD4.B 0x364 and uniform-handle gathers with an offset
+
+- Lichii 46a184c4e3 (zortos293, branch diag/yoshi-reject-recheck): a rejected
+  native program keeps the first 8 KiB it was made from and is read again at
+  most every 250 ms; when the bytes changed it is lowered again. On by default
+  for Yoshi and the Mysterious Book, which streams its shader code in (a
+  program read before its code lands left draws or dispatches skipped);
+  EDEN_NX2_REJECT_RECHECK=1 turns it on for every game, =0 off. Also for
+  native compute programs already rejected.
+- TLD4.B 0x364 (x, y | handle) and 0xf63 with an offset (handle then offset
+  in the meta registers), from our earlier tree (7999db4eb2): Yoshi's chapter
+  page and compute programs rejected them.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../frontend/ampere/lower_to_maxwell.h        |  36 ++++++-
+ src/video_core/shader_cache.cpp               | 102 ++++++++++++++++--
+ src/video_core/shader_cache.h                 |  14 ++-
+ 3 files changed, 140 insertions(+), 12 deletions(-)
+
+diff --git a/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h b/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
+index 7406a562b1..270c7ec2e2 100644
+--- a/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
++++ b/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
+@@ -2496,6 +2496,31 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+             }
+             break;
+         }
++        case 0x364: { // TLD4.B, 2D without offsets or depth compare: (x, y | handle), as 0x361 packs TEX.B (Yoshi docked).
++            const u32 mask = insn.Bits(72, 4), second_dest = insn.Bits(64, 8);
++            const u32 source_a = insn.Bits(24, 8), source_b = insn.Bits(32, 8);
++            const u32 components = static_cast<u32>(std::popcount(mask));
++            const u32 register_limit = uses_uniform_bank ? high_uniform_base : 246U;
++            const u32 first_count = second_dest == 255 ? components : std::min(components, 2U);
++            if (insn.Bits(61, 3) != 1 || insn.Bits(59, 2) != 3 || insn.Bits(40, 19) || insn.Bits(76, 5) ||
++                insn.Bits(81, 3) != 7 || insn.Bits(89, 1) || insn.Bits(91, 1) || mask == 0 ||
++                source_a == 255 || source_a + 1 >= register_limit || source_b >= register_limit ||
++                dest == 255 || dest + first_count > register_limit ||
++                (second_dest != 255 && second_dest + (components - first_count) > register_limit))
++                return fail(index, "native bindless texture gather mode");
++            emit(0x5c98000000000000ULL | predicate | 250 | (u64{15} << 39) | (u64{source_a} << 20));
++            emit(0x5c98000000000000ULL | predicate | 251 | (u64{15} << 39) | (u64{source_a + 1} << 20));
++            emit(0x5c98000000000000ULL | predicate | 246 | (u64{15} << 39) | (u64{source_b} << 20));
++            emit(0xdec0000000000000ULL | predicate | 250 | (u64{250} << 8) | (u64{246} << 20) |
++                 (u64{2} << 28) | (u64{mask} << 31) | (u64{insn.Bits(87, 2)} << 38) |
++                 (u64{insn.Bits(90, 1)} << 49) | (u64{7} << 51));
++            const bool split = second_dest != 255;
++            for (u32 i = 0; i < components; ++i) {
++                const u32 target = !split || i < 2 ? static_cast<u32>(dest) + i : second_dest + (i - 2);
++                emit(0x5c98000000000000ULL | predicate | target | (u64{15} << 39) | (u64{250 + i} << 20));
++            }
++            break;
++        }
+         case 0xb63: case 0xf63: { // TLD4 (gather); component at bits 87-88.
+             // 0xf63: the handle in a uniform register (bit 91), Maxwell TLD4.B with the handle in Rb.
+             const bool bindless = opcode == 0xf63;
+@@ -2545,7 +2570,8 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+                           dest >= register_limit ||
+                           // Up to two taps pack into dest alone (mask 3 with no second register).
+                           (std::popcount(mask) > 2 && second_dest >= register_limit))) ||
+-                (offsets && (bindless || source_b == 255 || (source_a != 255 && source_a >= 245))) ||
++                (offsets && ((bindless && array) || source_b == 255 || source_b >= register_limit ||
++                             (source_a != 255 && source_a >= 245))) ||
+                 (per_tap && (bindless || depth || insn.Bits(80, 1) || insn.Bits(91, 1))) ||
+                 insn.Bits(89, 1) || mask == 0 ||
+                 (bindless ? (handle >= 246 || insn.Bits(46, 13) || !insn.Bits(91, 1))
+@@ -2679,10 +2705,14 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+                      (u64{per_tap ? 2U : offsets ? 1U : 0U} << 36) | (u64{insn.Bits(87, 2)} << 38) |
+                      (u64{insn.Bits(90, 1)} << 49) | (u64{depth} << 50) | (u64{7} << 51));
+             } else if (bindless) {
++                // TLD4.B meta registers: the handle, then the offset (Yoshi gathers with an
++                // offset through a uniform handle).
++                if (offsets)
++                    emit(0x5c98000000000000ULL | predicate | 247 | (u64{15} << 39) | (u64{source_b} << 20));
+                 emit(0x5c98000000000000ULL | predicate | 246 | (u64{15} << 39) | (u64{handle} << 20));
+                 emit(0xdec0000000000000ULL | predicate | 250 | (u64{250} << 8) | (u64{246} << 20) |
+-                     (u64{array ? 3U : 2U} << 28) | (u64{mask} << 31) | (u64{insn.Bits(87, 2)} << 38) |
+-                     (u64{insn.Bits(90, 1)} << 49) | (u64{7} << 51));
++                     (u64{array ? 3U : 2U} << 28) | (u64{mask} << 31) | (u64{offsets ? 1U : 0U} << 36) |
++                     (u64{insn.Bits(87, 2)} << 38) | (u64{insn.Bits(90, 1)} << 49) | (u64{7} << 51));
+             } else {
+             if (offsets || depth)
+                 emit(0x5c98000000000000ULL | predicate | 246 | (u64{15} << 39) | (u64{source_b} << 20));
+diff --git a/src/video_core/shader_cache.cpp b/src/video_core/shader_cache.cpp
+index a06707c457..ae052c0508 100644
+--- a/src/video_core/shader_cache.cpp
++++ b/src/video_core/shader_cache.cpp
+@@ -152,7 +152,8 @@ bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) try {
+             return false;
+         }
+         const ShaderInfo* shader_info{TryGet(*cpu_shader_addr)};
+-        if (!shader_info && native && IsRejected(*cpu_shader_addr)) {
++        if (!shader_info && native && IsRejected(*cpu_shader_addr) &&
++            !RecheckRejection(*cpu_shader_addr)) {
+             // A rejected program fails the same way every time it is bound: skip its draws
+             // without rethrowing (two C++ throws each time cost ~1-2% of the GPU thread).
+             maxwell3d->GetNativeMacroEngine().native_execution_failed = true;
+@@ -168,7 +169,7 @@ bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) try {
+                 GraphicsEnvironment env{*maxwell3d, *gpu_memory, program, native ? shader_addr : base_addr, start_address};
+                 shader_info = MakeShaderInfo(env, *cpu_shader_addr);
+             } catch (const Shader::Exception&) {
+-                RememberRejection(*cpu_shader_addr);
++                RememberRejection(*cpu_shader_addr, shader_addr);
+                 // Once per program: which stage slot it is bound to, its header and the slot's
+                 // registers (to tell how a pipeline with task/mesh programs is set up).
+                 static std::unordered_set<GPUVAddr> described;
+@@ -269,7 +270,8 @@ const ShaderInfo* ShaderCache::ComputeShader() {
+                                                      *kepler_compute, *gpu_memory, bank, offset);
+                                              }))
+             throw Shader::Ampere::TrapGuardError{};
+-    } else if (kepler_compute->IsNativeMode() && IsRejected(*cpu_shader_addr)) {
++    } else if (kepler_compute->IsNativeMode() && IsRejected(*cpu_shader_addr) &&
++               !RecheckRejection(*cpu_shader_addr)) {
+         // A rejected program fails the same way on every dispatch. GetGraphicsEnvironments
+         // skips those draws without rethrowing; doing the same here avoids two C++ throws, a
+         // mutex-guarded insert and an exception_ptr for each dispatch of the program. The
+@@ -277,6 +279,7 @@ const ShaderInfo* ShaderCache::ComputeShader() {
+         return nullptr;
+     } else {
+         try {
++            RecheckRejection(*cpu_shader_addr);
+             RethrowIfRejected(*cpu_shader_addr);
+             ComputeEnvironment env{*kepler_compute, *gpu_memory, program_base, qmd.program_start};
+             shader = MakeShaderInfo(env, *cpu_shader_addr);
+@@ -284,7 +287,7 @@ const ShaderInfo* ShaderCache::ComputeShader() {
+             // Constants can become valid on the next dispatch; do not cache this rejection.
+             throw;
+         } catch (const Shader::Exception&) {
+-            RememberRejection(*cpu_shader_addr);
++            RememberRejection(*cpu_shader_addr, shader_addr);
+             throw;
+         }
+     }
+@@ -309,7 +312,7 @@ const ShaderInfo* ShaderCache::ComputeShader() {
+ void ShaderCache::RethrowIfRejected(VAddr addr) {
+     std::scoped_lock lock{rejected_mutex};
+     if (const auto it = rejected_native.find(addr); it != rejected_native.end()) {
+-        std::rethrow_exception(it->second);
++        std::rethrow_exception(it->second.error);
+     }
+ }
+ 
+@@ -318,14 +321,99 @@ bool ShaderCache::IsRejected(VAddr addr) {
+     return rejected_native.contains(addr);
+ }
+ 
+-void ShaderCache::RememberRejection(VAddr addr) {
++// On for Yoshi and the Mysterious Book, which streams its shader code in: a program read before
++// its code lands (zeros, or a branch out of what is there) is lowered again once its bytes change,
++// instead of leaving the world black. EDEN_NX2_REJECT_RECHECK=1 turns it on for every game, =0 off.
++static bool RejectRecheckEnabled(u64 program_id) {
++    static const int forced = [] {
++        const char* value = std::getenv("EDEN_NX2_REJECT_RECHECK");
++        return value == nullptr ? -1 : (value[0] == '0' ? 0 : 1);
++    }();
++    if (forced >= 0) {
++        return forced == 1;
++    }
++    return program_id == 0x0400245021D2C000ULL;
++}
++
++static std::vector<u8> ReadRejectedWindow(Tegra::MemoryManager& gpu_memory, GPUVAddr addr) {
++    size_t length = 0x2000;
++    while (length > 0x80 && !gpu_memory.IsFullyMappedRange(addr, length)) {
++        length /= 2;
++    }
++    std::vector<u8> bytes(length);
++    gpu_memory.ReadBlockUnsafe(addr, bytes.data(), length);
++    return bytes;
++}
++
++bool ShaderCache::RecheckRejection(VAddr addr) {
++    if (!RejectRecheckEnabled(program_id)) {
++        return false;
++    }
++    const auto now = std::chrono::steady_clock::now();
++    GPUVAddr gpu_addr;
++    std::vector<u8> before;
++    std::chrono::steady_clock::time_point made;
++    {
++        std::scoped_lock lock{rejected_mutex};
++        const auto it = rejected_native.find(addr);
++        if (it == rejected_native.end() ||
++            now - it->second.checked < std::chrono::milliseconds{250}) {
++            return false;
++        }
++        it->second.checked = now;
++        gpu_addr = it->second.gpu_addr;
++        before = it->second.bytes;
++        made = it->second.made;
++    }
++    const std::vector<u8> after = ReadRejectedWindow(*gpu_memory, gpu_addr);
++    const size_t length = (std::min)(before.size(), after.size());
++    const auto mismatch = std::mismatch(before.begin(), before.begin() + length, after.begin());
++    if (mismatch.first == before.begin() + length && before.size() == after.size()) {
++        return false;
++    }
++    {
++        std::scoped_lock lock{rejected_mutex};
++        rejected_native.erase(addr);
++    }
++    const size_t offset = static_cast<size_t>(mismatch.first - before.begin());
++    static std::atomic<u32> reports{};
++    if (reports.fetch_add(1, std::memory_order_relaxed) < 256) {
++        LOG_INFO(HW_GPU,
++                 "reject recheck: program {:#x} changed {} ms after rejection at +{:#x} "
++                 "({:02x} -> {:02x}), lowering again",
++                 gpu_addr,
++                 std::chrono::duration_cast<std::chrono::milliseconds>(now - made).count(), offset,
++                 offset < length ? before[offset] : u8{}, offset < length ? after[offset] : u8{});
++    }
++    return true;
++}
++
++void ShaderCache::RememberRejection(VAddr addr, GPUVAddr gpu_addr) {
++    Rejection rejection{};
++    rejection.error = std::current_exception();
++    rejection.gpu_addr = gpu_addr;
++    if (RejectRecheckEnabled(program_id)) {
++        rejection.bytes = ReadRejectedWindow(*gpu_memory, gpu_addr);
++        rejection.made = rejection.checked = std::chrono::steady_clock::now();
++        std::string what;
++        try {
++            std::rethrow_exception(rejection.error);
++        } catch (const std::exception& error) {
++            what = error.what();
++        }
++        static std::atomic<u32> reports{};
++        if (reports.fetch_add(1, std::memory_order_relaxed) < 256) {
++            LOG_INFO(HW_GPU, "reject recheck: remembered program {:#x} window={:#x}: {}", gpu_addr,
++                     rejection.bytes.size(), what);
++        }
++    }
+     std::scoped_lock lock{rejected_mutex};
+     if (rejected_native.contains(addr)) {
+         // Called from a catch block: keep the first exception for that address instead of
+         // capturing and inserting a new one on every rejected dispatch.
+         return;
+     }
+-    rejected_native.emplace(addr, std::current_exception());
++    rejected_native.emplace(addr, std::move(rejection));
+     page_filter.Mark(addr, 1); // InnerInvalidation reaches InvalidatePagesInRegion for it
+     rejected_lowest.store((std::min)(rejected_lowest.load(std::memory_order_relaxed), addr),
+                           std::memory_order_relaxed);
+diff --git a/src/video_core/shader_cache.h b/src/video_core/shader_cache.h
+index fb7129a644..17c1730d60 100644
+--- a/src/video_core/shader_cache.h
++++ b/src/video_core/shader_cache.h
+@@ -8,6 +8,7 @@
+ 
+ #include <array>
+ #include <atomic>
++#include <chrono>
+ #include <exception>
+ #include <memory>
+ #include <mutex>
+@@ -165,7 +166,9 @@ private:
+     /// Whether a native program at this address was rejected.
+     bool IsRejected(VAddr addr);
+     /// Remembers the exception being handled as this address's rejection.
+-    void RememberRejection(VAddr addr);
++    void RememberRejection(VAddr addr, GPUVAddr gpu_addr);
++    /// EDEN_NX2_REJECT_RECHECK: drops a rejection whose program bytes changed since it was made.
++    bool RecheckRejection(VAddr addr);
+     /// Hash of the state task and mesh programs are translated with.
+     u64 MeshStateHash() const;
+ 
+@@ -182,7 +185,14 @@ private:
+     /// Native programs the lowering rejected, by address, so each draw or dispatch rethrows the
+     /// first error instead of lowering again; dropped when guest memory there is written.
+     std::mutex rejected_mutex;
+-    ::Common::unordered_map<u64, std::exception_ptr> rejected_native;
++    struct Rejection {
++        std::exception_ptr error;
++        GPUVAddr gpu_addr{};
++        std::vector<u8> bytes;
++        std::chrono::steady_clock::time_point made;
++        std::chrono::steady_clock::time_point checked;
++    };
++    ::Common::unordered_map<u64, Rejection> rejected_native;
+     /// Bounds of every address ever rejected (never shrinks): a quick test for invalidations.
+     std::atomic<VAddr> rejected_lowest{~VAddr{}};
+     std::atomic<VAddr> rejected_highest{};
+-- 
+2.51.0.windows.1
+

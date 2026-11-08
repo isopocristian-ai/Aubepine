@@ -1,0 +1,97 @@
+From c5be2222a406a9745a84e13be426e694aff25ff6 Mon Sep 17 00:00:00 2001
+From: pattex67 <33281022+pattex67@users.noreply.github.com>
+Date: Sun, 8 Nov 2026 14:15:43 +0100
+Subject: [PATCH 18/18] Yoshi: DMA copies and inline uploads over scattered
+ device pages go page by page; IMAD with a negated constant addend
+
+- Ported from Nemyu 9ff295b316 (Uesleizito Zin), itself from SkiierCo/Satsuma
+  8400fe0f9b: the buffer cache's DMA copy and clear and the inline upload took
+  each range as one run of device memory from its first page. Yoshi and the
+  Mysterious Book moves its shader code with the DMA engine over a range whose
+  device pages are scattered, so the wrong pages were read and written and its
+  programs read as zeros (vertex programs skipped, Lichii issues #347 and
+  #755). Such ranges take the page-by-page paths.
+- IMAD (0x624) with bit 63 set negates the constant-buffer addend (IMAD.MOV
+  Rd, RZ, RZ, -c[..]): three compute programs of Yoshi's book pages.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../frontend/ampere/lower_to_maxwell.h               | 12 ++++++++++--
+ src/video_core/buffer_cache/buffer_cache.h           | 12 +++++++++++-
+ src/video_core/renderer_vulkan/vk_rasterizer.cpp     |  6 ++++++
+ 3 files changed, 27 insertions(+), 3 deletions(-)
+
+diff --git a/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h b/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
+index e1f7e4dbf1..0300f05458 100644
+--- a/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
++++ b/src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
+@@ -940,9 +940,17 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+                 break;
+             }
+             if (insn.Bits(24, 8) != 255 || insn.Bits(64, 8) != 255 || insn.words[2] != 0x078e00ff) {
+-                if ((insn.words[2] & ~0x2ffU) != 0x078e0000 || (opcode == 0x624 && insn.Bits(62, 2)))
++                // Bit 63 negates the constant-buffer addend (nvdisasm: IMAD.MOV Rd, RZ, RZ,
++                // -c[..]; Yoshi's book illustrations); bit 62 (abs) has no integer meaning here.
++                if ((insn.words[2] & ~0x2ffU) != 0x078e0000 || (opcode == 0x624 && insn.Bits(62, 1)))
+                     return fail(index, "native multiply wide addend mode");
+-                const u32 a = operand(0, false), b = operand(1, false), c = operand(2, false);
++                const u32 a = operand(0, false), b = operand(1, false);
++                u32 c = operand(2, false);
++                if (opcode == 0x624 && insn.Bits(63, 1)) {
++                    emit(0x5c10000000000000ULL | predicate | 252 | (u64{255} << 8) | (u64{c} << 20) |
++                         (u64{1} << 48));
++                    c = 252;
++                }
+                 multiply_low(a, b, c, false);
+                 break;
+             }
+diff --git a/src/video_core/buffer_cache/buffer_cache.h b/src/video_core/buffer_cache/buffer_cache.h
+index 07302fd7ad..2829561e53 100644
+--- a/src/video_core/buffer_cache/buffer_cache.h
++++ b/src/video_core/buffer_cache/buffer_cache.h
+@@ -442,6 +442,14 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
+     if (!cpu_src_address || !cpu_dest_address) {
+         return false;
+     }
++    // The copy below takes each range as one run of device memory from its first page. A range
++    // over scattered device pages (Yoshi's shader heap, which it moves with the DMA engine) would
++    // read and write the wrong pages and its programs read as zeros; the DMA engine copies those
++    // page by page instead (SkiierCo/Satsuma 8400fe0f9b, as Nemyu 9ff295b316).
++    if (!gpu_memory->IsContinuousRange(src_address, amount) ||
++        !gpu_memory->IsContinuousRange(dest_address, amount)) {
++        return false;
++    }
+     const bool source_dirty = IsRegionRegistered(*cpu_src_address, amount);
+     const bool dest_dirty = IsRegionRegistered(*cpu_dest_address, amount);
+     if (!source_dirty && !dest_dirty) {
+@@ -508,7 +516,9 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
+ template <class P>
+ bool BufferCache<P>::DMAClear(GPUVAddr dst_address, u64 amount, u32 value) {
+     const std::optional<DAddr> cpu_dst_address = gpu_memory->GpuToCpuAddress(dst_address);
+-    if (!cpu_dst_address) {
++    // Over scattered device pages the clear writes guest memory only, as for memory no buffer
++    // holds (see DMACopy).
++    if (!cpu_dst_address || !gpu_memory->IsContinuousRange(dst_address, amount)) {
+         return false;
+     }
+     const bool dest_dirty = IsRegionRegistered(*cpu_dst_address, amount);
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index 79f2435c04..09bb2937e1 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -2921,6 +2921,12 @@ void RasterizerVulkan::AccelerateInlineToMemory(GPUVAddr address, size_t copy_si
+         gpu_memory->WriteBlock(address, memory.data(), copy_size);
+         return;
+     }
++    if (copy_size > 0x1000 - (address & 0xfff) && !gpu_memory->IsContinuousRange(address, copy_size)) {
++        // Over scattered device pages the caches below would take the bytes as one run from the
++        // first page: write and invalidate page by page instead (Satsuma 8400fe0f9b).
++        gpu_memory->WriteBlock(address, memory.data(), copy_size);
++        return;
++    }
+     gpu_memory->WriteBlockUnsafe(address, memory.data(), copy_size);
+     // EDEN_NX2_INLINE_DEFER=0: invalidate every cache at once (for comparisons).
+     static const bool defer = [] {
+-- 
+2.51.0.windows.1
+

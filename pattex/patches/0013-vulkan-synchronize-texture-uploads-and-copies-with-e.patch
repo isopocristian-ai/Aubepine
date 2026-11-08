@@ -1,0 +1,219 @@
+From 7ccb05cbf07040b67109958e0a5a3865505eeae8 Mon Sep 17 00:00:00 2001
+From: MythosOfs <98063411+MythosOfs@users.noreply.github.com>
+Date: Sun, 8 Nov 2026 08:53:54 +0100
+Subject: [PATCH 13/18] vulkan: synchronize texture uploads and copies with
+ every stage that uses them
+
+Khronos sync validation on the Yoshi and the Mysterious Book chapter scene:
+- Uploads (CopyBufferToImage) only waited for late fragment tests, colour output and compute:
+  vertex and fragment shaders sampling the texture and early depth tests loading it did not wait.
+- CopyImage had the same gaps, and its TRANSFER_SRC -> GENERAL returns (also in the middle
+  pass and the shadow image) made nothing visible (dstAccessMask 0): a render pass LOAD of the
+  copied colour attachment read stale data (20 RAW hazards per run).
+- TransitionImageLayout and the present filters' init transition left out the transfer stage the
+  following clear or upload runs in (WAW hazards).
+After this a sync-validation run reports none of these.
+
+Texture cache: a CPU write to a held page still reaches the texture cache (only the pipeline
+cache waits for the held write), and an async flush no longer swizzles GPU data back over an
+image the CPU has modified since, which overwrote the CPU's newer bytes.
+---
+ .../renderer_vulkan/present/util.cpp          |  8 ++--
+ .../renderer_vulkan/vk_rasterizer.cpp         | 11 +++--
+ .../renderer_vulkan/vk_texture_cache.cpp      | 48 +++++++++----------
+ src/video_core/texture_cache/texture_cache.h  | 11 ++++-
+ 4 files changed, 44 insertions(+), 34 deletions(-)
+
+diff --git a/src/video_core/renderer_vulkan/present/util.cpp b/src/video_core/renderer_vulkan/present/util.cpp
+index 2ea7870f01..ab381c9eb1 100644
+--- a/src/video_core/renderer_vulkan/present/util.cpp
++++ b/src/video_core/renderer_vulkan/present/util.cpp
+@@ -49,8 +49,10 @@ vk::Image CreateWrappedImage(MemoryAllocator& allocator, VkExtent2D dimensions,
+ 
+ void TransitionImageLayout(vk::CommandBuffer& cmdbuf, VkImage image, VkImageLayout target_layout,
+                            VkImageLayout source_layout) {
++    // Transfer access too: callers clear or upload to the image right after this transition.
+     constexpr VkFlags flags{VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+-                            VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT};
++                            VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT |
++                            VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT};
+     const VkImageMemoryBarrier barrier{
+         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+         .pNext = nullptr,
+@@ -69,8 +71,8 @@ void TransitionImageLayout(vk::CommandBuffer& cmdbuf, VkImage image, VkImageLayo
+             .layerCount = 1,
+         },
+     };
+-    cmdbuf.PipelineBarrier(vk::PIPELINE_STAGE_GRAPHICS_COMPUTE, vk::PIPELINE_STAGE_GRAPHICS_COMPUTE,
+-                           0, barrier);
++    cmdbuf.PipelineBarrier(vk::PIPELINE_STAGE_GRAPHICS_COMPUTE_TRANSFER,
++                           vk::PIPELINE_STAGE_GRAPHICS_COMPUTE_TRANSFER, 0, barrier);
+ }
+ 
+ void UploadImage(const Device& device, MemoryAllocator& allocator, Scheduler& scheduler,
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index 92894a6029..79f2435c04 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -2115,16 +2115,21 @@ void RasterizerVulkan::InnerInvalidation(std::span<const std::pair<DAddr, std::s
+ 
+ bool RasterizerVulkan::OnCPUWrite(DAddr addr, u64 size) {
+     DEBUG_ASSERT(addr != 0 || size != 0);
++    bool held;
+     {
+         std::scoped_lock lock{buffer_cache.mutex};
+-        if (buffer_cache.OnCPUWrite(addr, size)) {
+-            return true;
+-        }
++        held = buffer_cache.OnCPUWrite(addr, size);
+     }
+     {
++        // Also for a held write: the images over it must not download their older bytes over
++        // it before it is applied (Yoshi and the Mysterious Book's shader code, written where an
++        // image was).
+         std::scoped_lock lock{texture_cache.mutex};
+         texture_cache.WriteMemory(addr, size);
+     }
++    if (held) {
++        return true;
++    }
+     pipeline_cache.InvalidateRegion(addr, size);
+     return false;
+ }
+diff --git a/src/video_core/renderer_vulkan/vk_texture_cache.cpp b/src/video_core/renderer_vulkan/vk_texture_cache.cpp
+index 7afcbdb515..6cd7f7121e 100644
+--- a/src/video_core/renderer_vulkan/vk_texture_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_texture_cache.cpp
+@@ -964,7 +964,7 @@ void CopyBufferToImage(vk::CommandBuffer cmdbuf, VkBuffer src_buffer, VkImage im
+     const VkImageMemoryBarrier read_barrier{
+             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+             .pNext = nullptr,
+-            .srcAccessMask = WRITE_ACCESS_FLAGS,
++            .srcAccessMask = WRITE_ACCESS_FLAGS | VK_ACCESS_TRANSFER_WRITE_BIT,
+             .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+             .oldLayout = is_initialized ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED,
+             .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+@@ -987,18 +987,16 @@ void CopyBufferToImage(vk::CommandBuffer cmdbuf, VkBuffer src_buffer, VkImage im
+             .subresourceRange = subresource_range,
+     };
+ 
+-    cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT |
+-                           VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+-                           VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+-                           read_barrier);
++    // Every stage that can use the image: vertex and fragment shaders sampling an upload, and
++    // early depth tests loading one, did not wait for the copy (textures read before it landed:
++    // black for a frame in Yoshi and the Mysterious Book).
++    cmdbuf.PipelineBarrier(vk::PIPELINE_STAGE_GRAPHICS_COMPUTE_TRANSFER,
++                           VK_PIPELINE_STAGE_TRANSFER_BIT, 0, read_barrier);
+     cmdbuf.CopyBufferToImage(src_buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, copies);
+     // TODO: Move this to another API
+-    cmdbuf.PipelineBarrier(
+-            VK_PIPELINE_STAGE_TRANSFER_BIT,
+-            VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT |
+-            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+-            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+-            0, nullptr, nullptr, write_barrier);
++    cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT,
++                           vk::PIPELINE_STAGE_GRAPHICS_COMPUTE_TRANSFER, 0, nullptr, nullptr,
++                           write_barrier);
+ }
+ 
+ [[nodiscard]] VkImageBlit MakeImageBlit(const Region2D& dst_region, const Region2D& src_region,
+@@ -1746,7 +1744,7 @@ void TextureCacheRuntime::ReinterpretImage(Image& dst, Image& src,
+                 .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                 .pNext = nullptr,
+                 .srcAccessMask = 0,
+-                .dstAccessMask = 0,
++                .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+                 .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                 .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+@@ -2647,7 +2645,7 @@ void TextureCacheRuntime::CopyImage(Image& dst, Image& src,
+                 .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                 .pNext = nullptr,
+                 .srcAccessMask = 0,
+-                .dstAccessMask = 0,
++                .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+                 .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                 .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+@@ -2673,18 +2671,15 @@ void TextureCacheRuntime::CopyImage(Image& dst, Image& src,
+                 .subresourceRange = dst_range.SubresourceRange(aspect_mask),
+             },
+         };
+-        cmdbuf.PipelineBarrier(
+-                VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+-                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+-                VK_PIPELINE_STAGE_TRANSFER_BIT,
+-                0, nullptr, nullptr, pre_barriers);
++        // Every stage that can sample, store to or render to either image: shader reads in vertex
++        // and fragment shaders and early depth tests were outside these scopes.
++        cmdbuf.PipelineBarrier(vk::PIPELINE_STAGE_GRAPHICS_COMPUTE_TRANSFER,
++                               VK_PIPELINE_STAGE_TRANSFER_BIT, 0, nullptr, nullptr, pre_barriers);
+         cmdbuf.CopyImage(src_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst_image,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vk_copies);
+-        cmdbuf.PipelineBarrier(
+-                VK_PIPELINE_STAGE_TRANSFER_BIT,
+-                VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+-                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+-                0, nullptr, nullptr, post_barriers);
++        cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT,
++                               vk::PIPELINE_STAGE_GRAPHICS_COMPUTE_TRANSFER, 0, nullptr, nullptr,
++                               post_barriers);
+     });
+ }
+ 
+@@ -2777,7 +2772,7 @@ void TextureCacheRuntime::CopyImageMSAA(Image& dst, Image& src,
+                         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                         .pNext = nullptr,
+                         .srcAccessMask = 0,
+-                        .dstAccessMask = 0,
++                        .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+                         .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                         .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+                         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+@@ -5228,8 +5223,9 @@ void TextureCacheRuntime::TransitionImageLayout(Image& image) {
+         };
+         scheduler.RequestOutsideRenderPassOperationContext();
+         scheduler.Record([barrier](vk::CommandBuffer cmdbuf) {
+-            cmdbuf.PipelineBarrier(vk::PIPELINE_STAGE_GRAPHICS_COMPUTE,
+-                                   vk::PIPELINE_STAGE_GRAPHICS_COMPUTE, 0, barrier);
++            // Clears and uploads that follow run in the transfer stage.
++            cmdbuf.PipelineBarrier(vk::PIPELINE_STAGE_GRAPHICS_COMPUTE_TRANSFER,
++                                   vk::PIPELINE_STAGE_GRAPHICS_COMPUTE_TRANSFER, 0, barrier);
+         });
+     }
+ }
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index 680986f5b2..249c545342 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -1595,7 +1595,11 @@ void TextureCache<P>::PopAsyncFlushes() {
+                 download_buffer.offset -= Common::AlignUp(image.unswizzled_size_bytes, 64);
+                 std::span<u8> download_span =
+                     download_buffer.mapped_span.subspan(download_buffer.offset);
+-                SwizzleImage(*gpu_memory, image.gpu_addr, image.info, copies, download_span, swizzle_data_buffer);
++                // Written by the CPU since the download was taken: these bytes are older.
++                if (False(image.flags & ImageFlagBits::CpuModified)) {
++                    SwizzleImage(*gpu_memory, image.gpu_addr, image.info, copies, download_span,
++                                 swizzle_data_buffer);
++                }
+             } else {
+                 const BufferDownload& buffer_info = slot_buffer_downloads[download_info.object_id];
+                 std::span<u8> download_span =
+@@ -1643,7 +1647,10 @@ void TextureCache<P>::PopAsyncFlushes() {
+             }
+             const ImageBase& image = download_info.GetImage(slot_images);
+             const auto copies = FullDownloadCopies(image.info);
+-            SwizzleImage(*gpu_memory, image.gpu_addr, image.info, copies, download_span, swizzle_data_buffer);
++            if (False(image.flags & ImageFlagBits::CpuModified)) {
++                SwizzleImage(*gpu_memory, image.gpu_addr, image.info, copies, download_span,
++                             swizzle_data_buffer);
++            }
+             download_map.offset += image.unswizzled_size_bytes;
+             download_span = download_span.subspan(image.unswizzled_size_bytes);
+         }
+-- 
+2.51.0.windows.1
+
