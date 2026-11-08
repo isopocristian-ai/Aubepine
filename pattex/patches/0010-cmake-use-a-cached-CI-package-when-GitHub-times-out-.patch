@@ -1,0 +1,54 @@
+From 29dee4879000be6ce61364f2b2bbf9ab64f1ef5f Mon Sep 17 00:00:00 2001
+From: pattex67 <33281022+pattex67@users.noreply.github.com>
+Date: Sun, 8 Nov 2026 12:04:47 +0100
+Subject: [PATCH 10/12] cmake: use a cached CI package when GitHub times out on
+ its checksum
+
+GitHub's release downloads answered 504 for every CI package's .sha512sum, which stopped
+reconfiguring although the packages were already in CPM_SOURCE_CACHE. When the cached package
+directory exists, configuring goes on with a warning; nothing is downloaded or checked then.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ CMakeModules/CPMUtil.cmake | 24 +++++++++++++++++-------
+ 1 file changed, 17 insertions(+), 7 deletions(-)
+
+diff --git a/CMakeModules/CPMUtil.cmake b/CMakeModules/CPMUtil.cmake
+index a628e3fc89..01cf03e406 100644
+--- a/CMakeModules/CPMUtil.cmake
++++ b/CMakeModules/CPMUtil.cmake
+@@ -1054,14 +1054,24 @@ function(AddCIPackage)
+             STATUS sha512sum_status)
+         list(GET sha512sum_status 0 sha512sum_error)
+ 
+-        if(sha512sum_error)
+-            message(FATAL_ERROR "[CPMUtil] Failed to download sha512sum "
+-                "for ${ARTIFACT_NAME} from ${sha512sum_url}")
+-        endif()
++        string(TOLOWER "${ARTIFACT_PACKAGE}" cached_package)
++        set(cached_dir "${CPM_SOURCE_CACHE}/${cached_package}/${ARTIFACT_VERSION}-${pkgname}")
++        if(sha512sum_error AND DEFINED CPM_SOURCE_CACHE AND EXISTS "${cached_dir}")
++            # GitHub's release downloads time out at times; the package itself is already cached.
++            message(WARNING "[CPMUtil] Could not download the sha512sum for ${ARTIFACT_NAME}; "
++                "using the cached package in ${cached_dir}")
++            # Not checked: the cached sources are used as they are, nothing is downloaded.
++            string(REPEAT "0" 128 sha512sum_hash)
++        else()
++            if(sha512sum_error)
++                message(FATAL_ERROR "[CPMUtil] Failed to download sha512sum "
++                    "for ${ARTIFACT_NAME} from ${sha512sum_url}")
++            endif()
+ 
+-        file(READ "${sha512sum_file}" sha512sum_hash)
+-        string(STRIP "${sha512sum_hash}" sha512sum_hash)
+-        file(REMOVE "${sha512sum_file}")
++            file(READ "${sha512sum_file}" sha512sum_hash)
++            string(STRIP "${sha512sum_hash}" sha512sum_hash)
++            file(REMOVE "${sha512sum_file}")
++        endif()
+ 
+         AddPackage(
+             NAME ${ARTIFACT_PACKAGE}
+-- 
+2.51.0.windows.1
+

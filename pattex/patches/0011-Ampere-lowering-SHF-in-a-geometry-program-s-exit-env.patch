@@ -1,0 +1,33 @@
+From 4f55e39e195b71a65e5dfea34f645770a7e684d4 Mon Sep 17 00:00:00 2001
+From: pattex67 <33281022+pattex67@users.noreply.github.com>
+Date: Sun, 8 Nov 2026 12:04:47 +0100
+Subject: [PATCH 11/12] Ampere lowering: SHF in a geometry program's exit
+ envelope body (Kirby Air Riders)
+
+The exit setup analysis did not know SHF (0x819, immediate form), so one of Kirby Air Riders'
+geometry programs was rejected ("native instruction before exit setup state is dead").
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/shader_recompiler/frontend/ampere/geometry_exit.h | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/src/shader_recompiler/frontend/ampere/geometry_exit.h b/src/shader_recompiler/frontend/ampere/geometry_exit.h
+index 14e2224925..b89bbed687 100644
+--- a/src/shader_recompiler/frontend/ampere/geometry_exit.h
++++ b/src/shader_recompiler/frontend/ampere/geometry_exit.h
+@@ -171,6 +171,11 @@ GeometryExitEnvelope AnalyzeGeometryExit(const Code& code) {
+             read_sources(true);
+             write_register(bits(index, 16, 8));
+             write_predicate(bits(index, 81, 3));
++        } else if (family == 0x019 && form != 0) {
++            // SHF Rd, Ra, b, Rc: one result (Kirby Air Riders' geometry programs use the
++            // immediate form, 0x819).
++            read_sources(true);
++            write_register(bits(index, 16, 8));
+         } else if (opcode == 0x321) {
+             // ALD Rd.. (1-4 components, bits 74-75), [Ra], Rb: loads attributes of the vertex in
+             // operand b (Yoshi and the Mysterious Book's geometry programs).
+-- 
+2.51.0.windows.1
+
