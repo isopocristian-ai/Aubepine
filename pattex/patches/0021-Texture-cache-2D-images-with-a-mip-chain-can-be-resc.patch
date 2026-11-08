@@ -1,0 +1,66 @@
+From 4bfe517a2a646224b5ef4006dca666e5a02cbdce Mon Sep 17 00:00:00 2001
+From: pattex67 <33281022+pattex67@users.noreply.github.com>
+Date: Sun, 8 Nov 2026 19:19:26 +0100
+Subject: [PATCH 21/22] Texture cache: 2D images with a mip chain can be
+ rescaled (EDEN_NX2_RESCALE_MIPS=0 restores the old rule)
+
+Kirby Air Riders renders its race into mip 0 of R16G16 and RGBA16F 2048x1152 chains
+(12 levels) with its depth buffer bound. Kept at the guest size, they forced that depth
+down and back up every frame at 2x, which keeps one depth sample in four; the main pass
+tests depth for equality, so it drew one pixel in four: a grid of dots and dark characters.
+Only acts when resolution scaling is on.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/video_core/texture_cache/image_info.cpp | 21 ++++++++++++++++++++-
+ 1 file changed, 20 insertions(+), 1 deletion(-)
+
+diff --git a/src/video_core/texture_cache/image_info.cpp b/src/video_core/texture_cache/image_info.cpp
+index 7e86bf00cf..c301132543 100644
+--- a/src/video_core/texture_cache/image_info.cpp
++++ b/src/video_core/texture_cache/image_info.cpp
+@@ -6,6 +6,7 @@
+ 
+ #include <algorithm>
+ #include <array>
++#include <cstdlib>
+ #include <vector>
+ #include <fmt/ranges.h>
+ 
+@@ -32,6 +33,21 @@ using VideoCore::Surface::SurfaceType;
+ constexpr u32 RescaleHeightThreshold = 288;
+ constexpr u32 DownscaleHeightThreshold = 512;
+ 
++namespace {
++/// 2D images with a mip chain used to stay at the guest size. Kirby Air Riders renders its race
++/// into mip 0 of such chains (R16G16 and RGBA16F, 2048x1152, 12 levels) with the depth buffer
++/// bound: at 2x that depth was scaled down and back up every frame, which keeps one depth sample
++/// in four, and the main pass (depth test EQUAL) then drew a pixel in four (dots, dark Kirby).
++/// EDEN_NX2_RESCALE_MIPS=0 restores the old rule.
++[[nodiscard]] bool RescaleMipChains() {
++    static const bool enabled = [] {
++        const char* const value = std::getenv("EDEN_NX2_RESCALE_MIPS");
++        return value == nullptr || value[0] != '0';
++    }();
++    return enabled;
++}
++} // Anonymous namespace
++
+ ImageInfo::ImageInfo(const TICEntry& config) noexcept {
+     forced_flushed = config.IsPitchLinear() && !Settings::values.use_reactive_flushing.GetValue();
+     dma_downloaded = forced_flushed;
+@@ -147,7 +163,10 @@ ImageInfo::ImageInfo(const TICEntry& config) noexcept {
+         // FIXME: Call this without passing *this
+         layer_stride = CalculateLayerStride(*this);
+         maybe_unaligned_layer_stride = CalculateLayerSize(*this);
+-        rescaleable &= (block.depth == 0) && resources.levels == 1;
++        const bool single_level_or_2d_chain =
++            resources.levels == 1 ||
++            (RescaleMipChains() && type == ImageType::e2D && resources.layers == 1);
++        rescaleable &= (block.depth == 0) && single_level_or_2d_chain;
+         rescaleable &= size.height > RescaleHeightThreshold ||
+                            GetFormatType(format) != SurfaceType::ColorTexture;
+         downscaleable = size.height > DownscaleHeightThreshold;
+-- 
+2.51.0.windows.1
+

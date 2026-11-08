@@ -56,6 +56,9 @@ And our own commits:
   there is one; with the upstream sizing the game lost the GPU about 90 s in.
 - **Star Fox**, **Yoshi and the Mysterious Book** and **Kirby Air Riders**: shader forms that were
   still rejected.
+- **Kirby Air Riders at 2x resolution**: the copy that scales its depth buffer is no longer empty
+  (black scenery), and its race is no longer drawn one pixel in four (a grid of dots, dark
+  characters): render targets with a mip chain now scale with the depth buffer they are drawn with.
 - The emulator shows as **Aubépine**, with its own **icon** (hawthorn berries); the executable is still
   `eglantine.exe`. Mario Kart World's recommended-settings question can be answered once, and
   `EDEN_NX2_TAS_TRIGGER` helps scripted tests.
@@ -69,7 +72,7 @@ Tested on Windows 11, Ryzen 7 9800X3D and Radeon RX 9070 XT, in short sessions.
 | Game | State |
 |---|---|
 | The Legend of Zelda: Ocarina of Time | 5-minute runs from a save without a crash, no rejected shaders, no white flashes. Max Resolution and Dynamic FPS are built in and on by default: 28-31 FPS at full resolution here (turn Max Resolution off in Add-Ons for speed). |
-| Kirby Air Riders | Menus and races with their scenery, no rejected shaders; the first session stutters while shaders compile, later ones reload them. |
+| Kirby Air Riders | Menus and races with their scenery, no rejected shaders, also at 2x resolution; the first session stutters while shaders compile, later ones reload them. Kirby's model is dark on the vehicle select. |
 | Donkey Kong Bananza | Saves load and play, no rejected shaders. |
 | Mario Kart World | Title and races, 31-54 FPS, no rejected shaders. |
 | Star Fox | Intro and training mission, no rejected shaders (needs the window patch in [pattex/star-fox](pattex/README.md#star-fox-window-patch)). |
@@ -121,7 +124,7 @@ mémorisée et un outil de test. **Yoshi et le Livre mystérieux** passe en mode
 que le jeu déplace avec le moteur de copie du GPU sur des pages mémoire dispersées, est copié page par
 page (trouvé par Satsuma, repris par Nemyu), et avec les correctifs d'Orchid, de Lichii et les nôtres
 la première mission n'est plus noire. Les six jeux testés (Zelda, Kirby, DK Bananza, Mario Kart World,
-Star Fox, Yoshi) tournent sans shader de calcul refusé dans nos essais courts ; Zelda tourne en pleine résolution
+Star Fox, Yoshi) tournent sans shader de calcul refusé dans nos essais courts ; **Kirby** s'affiche aussi en résolution 2x (décor noir, puis maillage de points et Kirby trop sombre avant) ; Zelda tourne en pleine résolution
 (patch « Max Resolution » intégré, à désactiver dans les Add-Ons pour gagner des FPS). Une version compilée pour Windows est dans
 les [Releases](https://github.com/pattex67/Aubepine/releases) ; pour compiler soi-même, suivre
 [docs/Build.md](docs/Build.md) sur la branche `pattex`. Ne jouez qu'à des jeux que vous possédez et

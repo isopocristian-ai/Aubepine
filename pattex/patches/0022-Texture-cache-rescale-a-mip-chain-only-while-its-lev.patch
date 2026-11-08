@@ -1,0 +1,116 @@
+From adc4cedf6a328c45cd8701698eb365ada7fc53d6 Mon Sep 17 00:00:00 2001
+From: pattex67 <33281022+pattex67@users.noreply.github.com>
+Date: Sun, 8 Nov 2026 19:33:51 +0100
+Subject: [PATCH 22/22] Texture cache: rescale a mip chain only while its level
+ 0 is rendered with a depth buffer that rescales
+
+Rescaling every 2D mip chain blacked out Mario Kart World's races at 2x. Chains now keep
+the old rule (rescaleable only with one level) and are marked mip_chain_rescaleable; a
+render pass that binds such a chain at level 0 next to a rescalable depth buffer scales it
+up instead of scaling that depth down. Kirby Air Riders' races stay free of the dot grid
+and Mario Kart World's races render again.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/video_core/texture_cache/image_info.cpp  | 20 +++++++++++---------
+ src/video_core/texture_cache/image_info.h    |  3 +++
+ src/video_core/texture_cache/texture_cache.h | 18 +++++++++++++++++-
+ 3 files changed, 31 insertions(+), 10 deletions(-)
+
+diff --git a/src/video_core/texture_cache/image_info.cpp b/src/video_core/texture_cache/image_info.cpp
+index c301132543..6e3df10926 100644
+--- a/src/video_core/texture_cache/image_info.cpp
++++ b/src/video_core/texture_cache/image_info.cpp
+@@ -34,11 +34,12 @@ constexpr u32 RescaleHeightThreshold = 288;
+ constexpr u32 DownscaleHeightThreshold = 512;
+ 
+ namespace {
+-/// 2D images with a mip chain used to stay at the guest size. Kirby Air Riders renders its race
+-/// into mip 0 of such chains (R16G16 and RGBA16F, 2048x1152, 12 levels) with the depth buffer
+-/// bound: at 2x that depth was scaled down and back up every frame, which keeps one depth sample
+-/// in four, and the main pass (depth test EQUAL) then drew a pixel in four (dots, dark Kirby).
+-/// EDEN_NX2_RESCALE_MIPS=0 restores the old rule.
++/// 2D images with a mip chain stay at the guest size. Kirby Air Riders renders its race into
++/// mip 0 of such chains (R16G16 and RGBA16F, 2048x1152, 12 levels) with the depth buffer bound:
++/// at 2x that depth was scaled down and back up every frame, which keeps one depth sample in
++/// four, and the main pass (depth test EQUAL) then drew a pixel in four (dots, dark Kirby).
++/// Such chains are marked mip_chain_rescaleable; rescaling every chain blacked out Mario Kart
++/// World's races. EDEN_NX2_RESCALE_MIPS=0 turns the exception off.
+ [[nodiscard]] bool RescaleMipChains() {
+     static const bool enabled = [] {
+         const char* const value = std::getenv("EDEN_NX2_RESCALE_MIPS");
+@@ -163,10 +164,11 @@ ImageInfo::ImageInfo(const TICEntry& config) noexcept {
+         // FIXME: Call this without passing *this
+         layer_stride = CalculateLayerStride(*this);
+         maybe_unaligned_layer_stride = CalculateLayerSize(*this);
+-        const bool single_level_or_2d_chain =
+-            resources.levels == 1 ||
+-            (RescaleMipChains() && type == ImageType::e2D && resources.layers == 1);
+-        rescaleable &= (block.depth == 0) && single_level_or_2d_chain;
++        mip_chain_rescaleable = rescaleable && RescaleMipChains() && block.depth == 0 &&
++                                resources.levels > 1 && type == ImageType::e2D &&
++                                resources.layers == 1 && size.height > RescaleHeightThreshold &&
++                                GetFormatType(format) == SurfaceType::ColorTexture;
++        rescaleable &= (block.depth == 0) && resources.levels == 1;
+         rescaleable &= size.height > RescaleHeightThreshold ||
+                            GetFormatType(format) != SurfaceType::ColorTexture;
+         downscaleable = size.height > DownscaleHeightThreshold;
+diff --git a/src/video_core/texture_cache/image_info.h b/src/video_core/texture_cache/image_info.h
+index 79237aa482..6bbdb598d3 100644
+--- a/src/video_core/texture_cache/image_info.h
++++ b/src/video_core/texture_cache/image_info.h
+@@ -50,6 +50,9 @@ struct ImageInfo {
+     u32 tile_width_spacing = 0;
+     bool native_tiling = false;
+     bool rescaleable = false;
++    /// A 2D color mip chain the size of a render target: rescaled only while its level 0 is
++    /// rendered with a rescaled depth buffer (see RescaleRenderTargets).
++    bool mip_chain_rescaleable = false;
+     bool downscaleable = false;
+     bool forced_flushed = false;
+     bool dma_downloaded = false;
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index 249c545342..3ddac86b5c 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -748,13 +748,26 @@ bool TextureCache<P>::RescaleRenderTargets() {
+         scale_rating = 0;
+         bool any_rescaled = false;
+         bool can_rescale = true;
++        // Mip chains rendered at level 0 with a depth buffer that rescales (see
++        // ImageInfo::mip_chain_rescaleable): scaling that depth down instead loses samples.
++        bool chain_pending = false;
++        bool depth_can_rescale = false;
+         const auto check_rescale = [&](ImageViewId view_id, ImageId& id_save) {
+             if (view_id != NULL_IMAGE_VIEW_ID && view_id != ImageViewId{}) {
+                 const auto& view = slot_image_views[view_id];
+                 const auto image_id = view.image_id;
+                 id_save = image_id;
+                 auto& image = slot_images[image_id];
+-                can_rescale &= ImageCanRescale(image);
++                const bool image_can = ImageCanRescale(image);
++                if (&id_save == &tmp_depth_image) {
++                    depth_can_rescale = image_can;
++                }
++                if (!image_can && image.info.mip_chain_rescaleable && view.range.base.level == 0 &&
++                    !Settings::values.resolution_info.downscale) {
++                    chain_pending = true;
++                } else {
++                    can_rescale &= image_can;
++                }
+                 any_rescaled |= True(image.flags & ImageFlagBits::Rescaled) ||
+                                 GetFormatType(image.info.format) != SurfaceType::ColorTexture;
+                 scale_rating = std::max<u32>(scale_rating, image.scale_tick <= frame_tick
+@@ -777,6 +790,9 @@ bool TextureCache<P>::RescaleRenderTargets() {
+             BindRenderTarget(&render_targets.depth_buffer_id, FindDepthBuffer());
+         }
+         check_rescale(render_targets.depth_buffer_id, tmp_depth_image);
++        if (chain_pending && (tmp_depth_image == CORRUPT_ID || !depth_can_rescale)) {
++            can_rescale = false;
++        }
+ 
+         if (can_rescale) {
+             rescaled = any_rescaled || scale_rating >= 2;
+-- 
+2.51.0.windows.1
+
