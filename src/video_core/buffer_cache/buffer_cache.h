@@ -442,6 +442,14 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
     if (!cpu_src_address || !cpu_dest_address) {
         return false;
     }
+    // The copy below takes each range as one run of device memory from its first page. A range
+    // over scattered device pages (Yoshi's shader heap, which it moves with the DMA engine) would
+    // read and write the wrong pages and its programs read as zeros; the DMA engine copies those
+    // page by page instead (SkiierCo/Satsuma 8400fe0f9b, as Nemyu 9ff295b316).
+    if (!gpu_memory->IsContinuousRange(src_address, amount) ||
+        !gpu_memory->IsContinuousRange(dest_address, amount)) {
+        return false;
+    }
     const bool source_dirty = IsRegionRegistered(*cpu_src_address, amount);
     const bool dest_dirty = IsRegionRegistered(*cpu_dest_address, amount);
     if (!source_dirty && !dest_dirty) {
@@ -508,7 +516,9 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
 template <class P>
 bool BufferCache<P>::DMAClear(GPUVAddr dst_address, u64 amount, u32 value) {
     const std::optional<DAddr> cpu_dst_address = gpu_memory->GpuToCpuAddress(dst_address);
-    if (!cpu_dst_address) {
+    // Over scattered device pages the clear writes guest memory only, as for memory no buffer
+    // holds (see DMACopy).
+    if (!cpu_dst_address || !gpu_memory->IsContinuousRange(dst_address, amount)) {
         return false;
     }
     const bool dest_dirty = IsRegionRegistered(*cpu_dst_address, amount);
