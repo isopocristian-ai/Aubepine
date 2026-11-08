@@ -1054,14 +1054,24 @@ function(AddCIPackage)
             STATUS sha512sum_status)
         list(GET sha512sum_status 0 sha512sum_error)
 
-        if(sha512sum_error)
-            message(FATAL_ERROR "[CPMUtil] Failed to download sha512sum "
-                "for ${ARTIFACT_NAME} from ${sha512sum_url}")
-        endif()
+        string(TOLOWER "${ARTIFACT_PACKAGE}" cached_package)
+        set(cached_dir "${CPM_SOURCE_CACHE}/${cached_package}/${ARTIFACT_VERSION}-${pkgname}")
+        if(sha512sum_error AND DEFINED CPM_SOURCE_CACHE AND EXISTS "${cached_dir}")
+            # GitHub's release downloads time out at times; the package itself is already cached.
+            message(WARNING "[CPMUtil] Could not download the sha512sum for ${ARTIFACT_NAME}; "
+                "using the cached package in ${cached_dir}")
+            # Not checked: the cached sources are used as they are, nothing is downloaded.
+            string(REPEAT "0" 128 sha512sum_hash)
+        else()
+            if(sha512sum_error)
+                message(FATAL_ERROR "[CPMUtil] Failed to download sha512sum "
+                    "for ${ARTIFACT_NAME} from ${sha512sum_url}")
+            endif()
 
-        file(READ "${sha512sum_file}" sha512sum_hash)
-        string(STRIP "${sha512sum_hash}" sha512sum_hash)
-        file(REMOVE "${sha512sum_file}")
+            file(READ "${sha512sum_file}" sha512sum_hash)
+            string(STRIP "${sha512sum_hash}" sha512sum_hash)
+            file(REMOVE "${sha512sum_file}")
+        endif()
 
         AddPackage(
             NAME ${ARTIFACT_PACKAGE}
