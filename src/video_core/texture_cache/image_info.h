@@ -50,6 +50,9 @@ struct ImageInfo {
     u32 tile_width_spacing = 0;
     bool native_tiling = false;
     bool rescaleable = false;
+    /// A 2D color mip chain the size of a render target: rescaled only while its level 0 is
+    /// rendered with a rescaled depth buffer (see RescaleRenderTargets).
+    bool mip_chain_rescaleable = false;
     bool downscaleable = false;
     bool forced_flushed = false;
     bool dma_downloaded = false;

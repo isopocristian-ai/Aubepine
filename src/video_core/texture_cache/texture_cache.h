@@ -748,13 +748,26 @@ bool TextureCache<P>::RescaleRenderTargets() {
         scale_rating = 0;
         bool any_rescaled = false;
         bool can_rescale = true;
+        // Mip chains rendered at level 0 with a depth buffer that rescales (see
+        // ImageInfo::mip_chain_rescaleable): scaling that depth down instead loses samples.
+        bool chain_pending = false;
+        bool depth_can_rescale = false;
         const auto check_rescale = [&](ImageViewId view_id, ImageId& id_save) {
             if (view_id != NULL_IMAGE_VIEW_ID && view_id != ImageViewId{}) {
                 const auto& view = slot_image_views[view_id];
                 const auto image_id = view.image_id;
                 id_save = image_id;
                 auto& image = slot_images[image_id];
-                can_rescale &= ImageCanRescale(image);
+                const bool image_can = ImageCanRescale(image);
+                if (&id_save == &tmp_depth_image) {
+                    depth_can_rescale = image_can;
+                }
+                if (!image_can && image.info.mip_chain_rescaleable && view.range.base.level == 0 &&
+                    !Settings::values.resolution_info.downscale) {
+                    chain_pending = true;
+                } else {
+                    can_rescale &= image_can;
+                }
                 any_rescaled |= True(image.flags & ImageFlagBits::Rescaled) ||
                                 GetFormatType(image.info.format) != SurfaceType::ColorTexture;
                 scale_rating = std::max<u32>(scale_rating, image.scale_tick <= frame_tick
@@ -777,6 +790,9 @@ bool TextureCache<P>::RescaleRenderTargets() {
             BindRenderTarget(&render_targets.depth_buffer_id, FindDepthBuffer());
         }
         check_rescale(render_targets.depth_buffer_id, tmp_depth_image);
+        if (chain_pending && (tmp_depth_image == CORRUPT_ID || !depth_can_rescale)) {
+            can_rescale = false;
+        }
 
         if (can_rescale) {
             rescaled = any_rescaled || scale_rating >= 2;
