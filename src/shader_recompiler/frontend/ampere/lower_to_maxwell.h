@@ -2013,8 +2013,10 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 (size == 5 && (dest & 1)) || (size == 6 && (dest & 3)))
                 return fail(index, "native global load mode");
             if (opcode == 0x381) {
-                // Bit 77 (strong/scoped ordering) needs nothing extra from a Maxwell LDG.
-                if ((insn.words[2] & ~0x2e00U) != 0x001e8100 || (address & 1) || address >= 246)
+                // Bit 77 (strong/scoped ordering) needs nothing extra from a Maxwell LDG. Bits 64-69
+                // name a descriptor pair (desc[URn][Ra.64], cache policy only, as in 0x981; Yoshi's
+                // first mission).
+                if ((insn.words[2] & ~(0x2e00U | 0x3fU)) != 0x001e8100 || (address & 1) || address >= 246)
                     return fail(index, "native global load mode");
             } else {
                 // The uniform base sits where a register source would (bits 32-37).
@@ -3251,12 +3253,16 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
         }
         case 0x845: case 0x906: {
             const bool round_up = opcode == 0x906;
+            // Bits 75-76: the result format, 2 = F32; I2F.F16 (1, Yoshi's first mission: I2F.F16.S32
+            // Rd, -1) writes the half to the low 16 bits with the high half zero, as Maxwell's I2F.
+            const u32 format = insn.Bits(75, 2);
             if (insn.Bits(24, 8) || (insn.words[3] & 0xc00001ffU) ||
-                (insn.words[2] & ~0xc400U) != 0x00201000U)
+                (format != 2 && !(format == 1 && opcode == 0x906)) ||
+                (insn.words[2] & ~0xc400U) != (0x00200000U | (format << 11)))
                 return fail(index, "native immediate integer-to-float conversion mode");
-            if (insn.words[2] != (round_up ? 0x00209000U : 0x0020d000U)) {
+            if (format == 1 || insn.words[2] != (round_up ? 0x00209000U : 0x0020d000U)) {
                 mov_imm(250, insn.words[1]);
-                emit(base(0x5cb8000000000000ULL) | (u64{2} << 8) | (u64{2} << 10) |
+                emit(base(0x5cb8000000000000ULL) | (u64{format} << 8) | (u64{2} << 10) |
                      (u64{insn.Bits(74, 1)} << 13) | (u64{250} << 20) |
                      (u64{insn.Bits(78, 2)} << 39));
                 break;
