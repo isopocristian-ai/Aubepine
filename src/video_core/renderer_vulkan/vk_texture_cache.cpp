@@ -4168,6 +4168,34 @@ bool Image::ScaleUp(bool ignore) {
         scaled_image = MakeImage(runtime->device, runtime->memory_allocator, scaled_info,
                                  runtime->ViewFormats(info.format));
         ignore = false;
+        if (scaled_image) {
+            // The helper blit renders into the new image as a GENERAL attachment: give it that
+            // layout first (on AMD this also sets up the depth metadata).
+            scheduler->RequestOutsideRenderPassOperationContext();
+            scheduler->Record([image = *scaled_image,
+                               aspect = ImageAspectMask(info.format)](vk::CommandBuffer cmdbuf) {
+                const VkImageMemoryBarrier barrier{
+                    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                    .pNext = nullptr,
+                    .srcAccessMask = 0,
+                    .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+                    .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                    .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .image = image,
+                    .subresourceRange{
+                        .aspectMask = aspect,
+                        .baseMipLevel = 0,
+                        .levelCount = VK_REMAINING_MIP_LEVELS,
+                        .baseArrayLayer = 0,
+                        .layerCount = VK_REMAINING_ARRAY_LAYERS,
+                    },
+                };
+                cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                       VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, barrier);
+            });
+        }
     }
     current_image = &Image::scaled_image;
     if (ignore) {
@@ -4228,12 +4256,25 @@ bool Image::BlitScaleHelper(bool scale_up) {
     const auto& resolution = runtime->resolution;
     const u32 scaled_width = resolution.ScaleUp(info.size.width);
     const u32 scaled_height = is_2d ? resolution.ScaleUp(info.size.height) : info.size.height;
+    // Read the other copy of this image: original_image when scaling up, scaled_image when
+    // scaling down. A view made from *this wraps current_image, which the caller has already
+    // switched to the destination, so the blit used to read the image it was writing: the
+    // rescaled copy came out empty (Kirby Air Riders' race depth at 2x on AMD).
+    const auto view_info = ImageViewInfo(ImageViewType::e2D, info.format);
+    const auto make_view = [&](std::unique_ptr<ImageView>& view, vk::Image Image::*image) {
+        if (!view) {
+            const auto saved = current_image;
+            current_image = image;
+            view = std::make_unique<ImageView>(*runtime, view_info, NULL_IMAGE_ID, *this);
+            current_image = saved;
+        }
+        return view.get();
+    };
+    ImageView* const scaled_view = make_view(scale_view, &Image::scaled_image);
+    ImageView* const unscaled_view = make_view(normal_view, &Image::original_image);
     std::unique_ptr<ImageView>& blit_view = scale_up ? scale_view : normal_view;
+    ImageView& src_view = *(scale_up ? unscaled_view : scaled_view);
     std::optional<Framebuffer>& blit_framebuffer = scale_up ? scale_framebuffer : normal_framebuffer;
-    if (!blit_view) {
-        const auto view_info = ImageViewInfo(ImageViewType::e2D, info.format);
-        blit_view = std::make_unique<ImageView>(*runtime, view_info, NULL_IMAGE_ID, *this);
-    }
 
     const auto [samples_x, samples_y] = VideoCommon::SamplesLog2(info.num_samples);
     const u32 src_width = (scale_up ? info.size.width : scaled_width) >> samples_x;
@@ -4258,10 +4299,10 @@ bool Image::BlitScaleHelper(bool scale_up) {
         if (!blit_framebuffer)
             blit_framebuffer.emplace(*runtime, view_ptr, nullptr, extent, scale_up);
         if (info.num_samples > 1) {
-            runtime->blit_image_helper.BlitColorMSAA(&*blit_framebuffer, *blit_view,
+            runtime->blit_image_helper.BlitColorMSAA(&*blit_framebuffer, src_view,
                 dst_region, src_region);
         } else {
-            runtime->blit_image_helper.BlitColor(&*blit_framebuffer, *blit_view,
+            runtime->blit_image_helper.BlitColor(&*blit_framebuffer, src_view,
                 dst_region, src_region, operation, BLIT_OPERATION);
         }
     } else if ((aspect_mask & VK_IMAGE_ASPECT_DEPTH_BIT) != 0) {
@@ -4271,13 +4312,13 @@ bool Image::BlitScaleHelper(bool scale_up) {
         const bool can_blit_stencil =
             has_stencil && runtime->device.IsExtShaderStencilExportSupported();
         if (info.num_samples > 1) {
-            runtime->blit_image_helper.BlitDepthStencilMSAA(&*blit_framebuffer, *blit_view,
+            runtime->blit_image_helper.BlitDepthStencilMSAA(&*blit_framebuffer, src_view,
                 dst_region, src_region);
         } else if (can_blit_stencil) {
-            runtime->blit_image_helper.BlitDepthStencil(&*blit_framebuffer, *blit_view,
+            runtime->blit_image_helper.BlitDepthStencil(&*blit_framebuffer, src_view,
                 dst_region, src_region, operation, BLIT_OPERATION);
         } else {
-            runtime->blit_image_helper.BlitDepth(&*blit_framebuffer, *blit_view, dst_region,
+            runtime->blit_image_helper.BlitDepth(&*blit_framebuffer, src_view, dst_region,
                                                  src_region);
         }
     } else {
