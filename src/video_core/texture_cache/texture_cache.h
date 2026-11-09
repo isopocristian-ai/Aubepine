@@ -2595,6 +2595,12 @@ bool TextureCache<P>::ImageCanRescale(ImageBase& image) {
     image.flags |= ImageFlagBits::CheckingRescalable;
     for (const auto& alias : image.aliased_images) {
         Image& other_image = slot_images[alias.id];
+        // A render target over part of a mip chain (Kirby Air Riders' updated version renders
+        // its race at a dynamic 1712x960 over its 2048x1152 chains): the chain follows it.
+        if (other_image.info.mip_chain_rescaleable &&
+            !Settings::values.resolution_info.downscale) {
+            continue;
+        }
         if (!ImageCanRescale(other_image)) {
             image.flags &= ~ImageFlagBits::CheckingRescalable;
             return false;
