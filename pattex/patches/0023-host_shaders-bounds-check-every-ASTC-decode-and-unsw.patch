@@ -1,0 +1,127 @@
+From ba19cb6162d9315698927edca0f825ac33614825 Mon Sep 17 00:00:00 2001
+From: Frizti <FriztiMouche@gmail.com>
+Date: Mon, 9 Nov 2026 18:16:58 +0100
+Subject: [PATCH 23/25] host_shaders: bounds-check every ASTC decode and
+ unswizzle image store (AMD corruption and device loss)
+
+A block at the right or bottom edge of an image whose size isn't a multiple of
+the block size, and workgroups rounded past the image, stored texels outside
+it. NVIDIA drops those; on AMD they landed in other images' memory (black
+blocks and a crosshatch in OoT on an RX 6750 XT) and finally faulted the GPU.
+
+From CheezerWheezer's AMD Superior build 7 (132cc46c9e), as ported to Fritchii by
+Frizti (QuincyForbes/Lichii c739320e5b).
+
+Co-Authored-By: CheezerWheezer <172987769+CheezerWheezer@users.noreply.github.com>
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/video_core/host_shaders/astc_decoder.comp | 21 +++++++++++++++----
+ .../block_linear_unswizzle_2d.comp            |  5 +++++
+ .../block_linear_unswizzle_3d.comp            |  5 +++++
+ .../host_shaders/pitch_unswizzle.comp         |  5 +++++
+ 4 files changed, 32 insertions(+), 4 deletions(-)
+
+diff --git a/src/video_core/host_shaders/astc_decoder.comp b/src/video_core/host_shaders/astc_decoder.comp
+index c6d5a96d14..9266fc8a7f 100644
+--- a/src/video_core/host_shaders/astc_decoder.comp
++++ b/src/video_core/host_shaders/astc_decoder.comp
+@@ -1117,10 +1117,22 @@ int FindLayout(uint mode) {
+ }
+ 
+ 
++// The image's size: a block at the right or bottom edge of an image whose size isn't a multiple
++// of the block size reaches past it. Storing those texels anyway is undefined; on AMD they landed
++// in other images' memory (black blocks and a crosshatch in Ocarina of Time on an RX 6750 XT, and
++// at last a GPU fault on an invalid write), where NVIDIA dropped them.
++ivec3 image_extent;
++
++void StoreTexel(ivec3 texel, vec4 value) {
++    if (all(lessThan(texel.xy, image_extent.xy))) {
++        imageStore(dest_image, texel, value);
++    }
++}
++
+ void FillError(ivec3 coord) {
+     for (uint j = 0; j < block_dims.y; j++) {
+         for (uint i = 0; i < block_dims.x; i++) {
+-            imageStore(dest_image, coord + ivec3(i, j, 0), vec4(0.0, 0.0, 0.0, 0.0));
++            StoreTexel(coord + ivec3(i, j, 0), vec4(0.0, 0.0, 0.0, 0.0));
+         }
+     }
+ }
+@@ -1137,7 +1149,7 @@ void FillVoidExtentLDR(ivec3 coord) {
+     const float b = float(b_u) / 65535.0f;
+     for (uint j = 0; j < block_dims.y; j++) {
+         for (uint i = 0; i < block_dims.x; i++) {
+-            imageStore(dest_image, coord + ivec3(i, j, 0), vec4(r, g, b, a));
++            StoreTexel(coord + ivec3(i, j, 0), vec4(r, g, b, a));
+         }
+     }
+ }
+@@ -1417,7 +1429,7 @@ void DecompressBlock(ivec3 coord) {
+                 p = Cf / 65535.0f;
+             }
+ 
+-            imageStore(dest_image, coord + ivec3(i, j, 0), clamp(p, 0.0f, 1.0f).gbar);
++            StoreTexel(coord + ivec3(i, j, 0), clamp(p, 0.0f, 1.0f).gbar);
+         }
+     }
+ }
+@@ -1449,7 +1461,8 @@ void main() {
+     offset += swizzle;
+ 
+     const ivec3 coord = ivec3(gl_GlobalInvocationID * uvec3(block_dims, 1));
+-    if (any(greaterThanEqual(coord, imageSize(dest_image)))) {
++    image_extent = imageSize(dest_image);
++    if (any(greaterThanEqual(coord, image_extent))) {
+         return;
+     }
+     local_buff = astc_data[offset / 16];
+diff --git a/src/video_core/host_shaders/block_linear_unswizzle_2d.comp b/src/video_core/host_shaders/block_linear_unswizzle_2d.comp
+index bbe73acd1a..5f2d11d18e 100644
+--- a/src/video_core/host_shaders/block_linear_unswizzle_2d.comp
++++ b/src/video_core/host_shaders/block_linear_unswizzle_2d.comp
+@@ -127,5 +127,10 @@ void main() {
+ 
+     const uvec4 texel = ReadTexel(offset);
+     const ivec3 coord = ivec3(gl_GlobalInvocationID) + destination;
++    // Workgroups round the dispatch up past the image; on AMD a store outside it lands in other
++    // memory (see astc_decoder.comp).
++    if (any(greaterThanEqual(coord, imageSize(output_image)))) {
++        return;
++    }
+     imageStore(output_image, coord, texel);
+ }
+diff --git a/src/video_core/host_shaders/block_linear_unswizzle_3d.comp b/src/video_core/host_shaders/block_linear_unswizzle_3d.comp
+index 8dfaf0cd1a..9df13369c2 100644
+--- a/src/video_core/host_shaders/block_linear_unswizzle_3d.comp
++++ b/src/video_core/host_shaders/block_linear_unswizzle_3d.comp
+@@ -130,5 +130,10 @@ void main() {
+ 
+     const uvec4 texel = ReadTexel(offset);
+     const ivec3 coord = ivec3(gl_GlobalInvocationID) + destination;
++    // Workgroups round the dispatch up past the image; on AMD a store outside it lands in other
++    // memory (see astc_decoder.comp).
++    if (any(greaterThanEqual(coord, imageSize(output_image)))) {
++        return;
++    }
+     imageStore(output_image, coord, texel);
+ }
+diff --git a/src/video_core/host_shaders/pitch_unswizzle.comp b/src/video_core/host_shaders/pitch_unswizzle.comp
+index 7d23f594c7..49196f21ee 100644
+--- a/src/video_core/host_shaders/pitch_unswizzle.comp
++++ b/src/video_core/host_shaders/pitch_unswizzle.comp
+@@ -81,5 +81,10 @@ void main() {
+ 
+     const uvec4 texel = ReadTexel(offset);
+     const ivec2 coord = ivec2(gl_GlobalInvocationID.xy) + destination;
++    // Workgroups round the dispatch up past the image; on AMD a store outside it lands in other
++    // memory (see astc_decoder.comp).
++    if (any(greaterThanEqual(coord, imageSize(output_image)))) {
++        return;
++    }
+     imageStore(output_image, coord, texel);
+ }
+-- 
+2.51.0.windows.1
+

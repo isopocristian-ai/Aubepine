@@ -1,0 +1,33 @@
+From d510d751828bec75b29cf7374a6bb3b18e0c0a1d Mon Sep 17 00:00:00 2001
+From: pattex67 <33281022+pattex67@users.noreply.github.com>
+Date: Mon, 9 Nov 2026 18:24:19 +0100
+Subject: [PATCH 24/25] Build: rename a local that hides another in
+ nx2_stutter_trace.cpp (MSVC turns C4456 into an error)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/video_core/nx2_stutter_trace.cpp | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/src/video_core/nx2_stutter_trace.cpp b/src/video_core/nx2_stutter_trace.cpp
+index dc27858b64..e9a21c5397 100644
+--- a/src/video_core/nx2_stutter_trace.cpp
++++ b/src/video_core/nx2_stutter_trace.cpp
+@@ -402,11 +402,11 @@ void OnPresent() {
+         // Ticks and count are separate atomics: a run can land in one frame's ticks and the next
+         // frame's count, so each adds up on its own.
+         const u64 count = site_counts[index] - (std::min)(site_counts[index], last_site_counts[index]);
+-        const u64 ticks = site_ticks[index] - (std::min)(site_ticks[index], last_site_ticks[index]);
+-        if (count == 0 && ticks == 0) {
++        const u64 site_ms_ticks = site_ticks[index] - (std::min)(site_ticks[index], last_site_ticks[index]);
++        if (count == 0 && site_ms_ticks == 0) {
+             continue;
+         }
+-        const double ms = static_cast<double>(ticks) * ms_per_tick;
++        const double ms = static_cast<double>(site_ms_ticks) * ms_per_tick;
+         state.window_site_counts[index] += count;
+         state.window_site_ms[index] += ms;
+         sites += fmt::format("{}{}:{}x{:.1f}", sites.empty() ? "" : ",", site_names[index], count, ms);
+-- 
+2.51.0.windows.1
+

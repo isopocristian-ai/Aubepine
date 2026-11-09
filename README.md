@@ -29,7 +29,7 @@ with a few fixes of its own for the games we play on AMD.</h4>
 
 ## What it adds
 
-Since 2026-11-08 Aubépine builds on **Lichii nx2** (build 117 and later), which brings the
+Since 2026-11-08 Aubépine builds on **Lichii nx2** (build 125 and later since 2026-11-09), which brings the
 community's work on **The Legend of Zelda: Ocarina of Time** (vegetation, fog, white flashes, the
 upscaler, performance, matrix programs on `VK_KHR_cooperative_matrix` for RDNA4) and had caught up
 with most of this fork's earlier additions (Star Fox's audio, the Switch 2 mouse, Mario Kart World and
@@ -37,9 +37,9 @@ DK Bananza frame modes, FSR 3, loose dumps). On top of it:
 
 - **[Lichii PR #573](https://github.com/zortos293/Lichii/pull/573)**, AMD and split GPU thread fixes
   for Ocarina of Time measured on a Radeon RX 9070 XT: 28-31 FPS at full resolution here, 23-24 before.
-- **Compiled shaders are saved** between sessions (`VK_KHR_pipeline_binary`, from CheezerWheezer's
-  "AMD Superior" build): AMD's Windows driver doesn't keep them, so every game compiled its shaders
-  again at each boot.
+- **Image stores checked against the image's edge** in the ASTC decoder and the unswizzle shaders
+  (from CheezerWheezer's "AMD Superior" build, as ported to Fritchii by Frizti): on AMD, edge blocks
+  wrote into other images (black blocks, a crosshatch) and could lose the GPU.
 - **Yoshi and the Mysterious Book, docked**: its shader code, which the game moves with the GPU's DMA
   engine over scattered memory pages, is copied page by page (found by SkiierCo's Satsuma, as in
   Nemyu), so its programs no longer read as zeros; with texture synchronization from MythosOfs'
@@ -58,7 +58,8 @@ And our own commits:
   still rejected.
 - **Kirby Air Riders at 2x resolution**: the copy that scales its depth buffer is no longer empty
   (black scenery), and its race is no longer drawn one pixel in four (a grid of dots, dark
-  characters): render targets with a mip chain now scale with the depth buffer they are drawn with.
+  characters): render targets with a mip chain now scale with the depth buffer they are drawn with,
+  in the base game and in its update.
 - The emulator shows as **Aubépine**, with its own **icon** (hawthorn berries); the executable is still
   `eglantine.exe`. Mario Kart World's recommended-settings question can be answered once, and
   `EDEN_NX2_TAS_TRIGGER` helps scripted tests.
@@ -71,13 +72,15 @@ Tested on Windows 11, Ryzen 7 9800X3D and Radeon RX 9070 XT, in short sessions.
 
 | Game | State |
 |---|---|
-| The Legend of Zelda: Ocarina of Time | 5-minute runs from a save without a crash, no rejected shaders, no white flashes. Max Resolution and Dynamic FPS are built in and on by default: 28-31 FPS at full resolution here (turn Max Resolution off in Add-Ons for speed). |
-| Kirby Air Riders | Menus and races with their scenery, no rejected shaders, also at 2x resolution; the first session stutters while shaders compile, later ones reload them. Kirby's model is dark on the vehicle select. |
+| The Legend of Zelda: Ocarina of Time | Runs of 5 to 6 minutes from a save without a crash, no rejected shaders, no white flashes. Lichii's built-in Max Resolution and FPS Unlock add-ons are on by default: about 58 FPS on average at full resolution here, 60 most of the time, with a few stutters (turn Max Resolution off in Add-Ons for speed). |
+| Kirby Air Riders | Menus and races with their scenery, no rejected shaders, also at 2x resolution in the base game and its update; the first session compiles its shaders (about 200 s to boot), later ones boot in about 40 s. Kirby's model is dark on the vehicle select. |
 | Donkey Kong Bananza | Saves load and play, no rejected shaders. |
 | Mario Kart World | Title and races, 31-54 FPS, no rejected shaders. |
 | Star Fox | Intro and training mission, no rejected shaders (needs the window patch in [pattex/star-fox](pattex/README.md#star-fox-window-patch)). |
 | Yoshi and the Mysterious Book | Docked, played by hand: intro, chapter page, the first mission and a second level render (about 10 minutes); one title-screen program still reads as zeros, with nothing visible missing. Closing during the game can hang. |
 | Metroid Prime 4 | Ran at 60 FPS on our previous base; not run on this one yet. |
+
+Only Ocarina of Time and Kirby Air Riders were run again after the move to Lichii build 125.
 
 Only play games you own and dumped yourself. No keys, firmware or game files are provided here.
 
@@ -99,6 +102,7 @@ PokeDinner-based version for reference.
 Aubépine stands on the work of the Eden, Yuzu and Sudachi developers, Eglantine (Djihads80 and its
 contributors), Lichii (zortos293 and its many contributors), PokeDinner (Franseven), Nemyu (Uesleizito
 Zin), Selevet Eglantine (sylvieistaken), MythosOfs (Orchid), SkiierCo (Satsuma), CheezerWheezer,
+Frizti (Fritchii),
 monkeefunnee and Purebuilt (AMDEGL). The fork's
 own changes were made with an AI assistant (Claude Opus 5.5).
 
@@ -115,16 +119,17 @@ Aubépine is licensed under the GPLv3 (or any later version), like Eglantine and
 (pilote AMD ; pas testé sur NVIDIA ni Intel). Depuis le 8 novembre 2026 il repose sur **Lichii**
 (fork d'Eglantine), qui apporte tout le travail de la communauté sur **Zelda: Ocarina of Time**
 (végétation, brouillard, flashs, performances, calcul matriciel RDNA4) et avait déjà repris l'essentiel
-de nos anciens ajouts. S'y ajoutent la PR Lichii #573 (Zelda à 28-31 FPS en pleine résolution sur une
-RX 9070 XT, 23-24 avant), la **sauvegarde des shaders compilés** entre deux sessions (le pilote AMD ne
-les garde pas) et nos correctifs : la carte d'ombres de la forêt Kokiri sur AMD, la taille des buffers
+de nos anciens ajouts. Depuis le 9 novembre, c'est la build 125 de Lichii : Zelda y tourne vers 60 FPS en pleine résolution
+sur une RX 9070 XT (patch « FPS Unlock » intégré) et les shaders compilés sont gardés par le cache de
+Lichii. S'y ajoutent la PR Lichii #573, la vérification des bords d'image dans le décodage ASTC
+(build « AMD Superior », reprise par Frizti : blocs noirs puis perte du GPU sur AMD) et nos correctifs : la carte d'ombres de la forêt Kokiri sur AMD, la taille des buffers
 qui évite à **Kirby** de perdre le GPU, des instructions de shader pour **Star Fox**, **Yoshi** et
 **Kirby**, le nom et l'**icône** Aubépine (des baies d'aubépine), la question de Mario Kart World
 mémorisée et un outil de test. **Yoshi et le Livre mystérieux** passe en mode TV : son code de shader,
 que le jeu déplace avec le moteur de copie du GPU sur des pages mémoire dispersées, est copié page par
 page (trouvé par Satsuma, repris par Nemyu), et avec les correctifs d'Orchid, de Lichii et les nôtres
 la première mission n'est plus noire. Les six jeux testés (Zelda, Kirby, DK Bananza, Mario Kart World,
-Star Fox, Yoshi) tournent sans shader de calcul refusé dans nos essais courts ; **Kirby** s'affiche aussi en résolution 2x (décor noir, puis maillage de points et Kirby trop sombre avant) ; Zelda tourne en pleine résolution
+Star Fox, Yoshi) tournent sans shader de calcul refusé dans nos essais courts ; **Kirby** s'affiche aussi en résolution 2x, jeu de base comme mis à jour (décor noir, puis maillage de points et Kirby trop sombre avant) ; Zelda tourne en pleine résolution
 (patch « Max Resolution » intégré, à désactiver dans les Add-Ons pour gagner des FPS). Une version compilée pour Windows est dans
 les [Releases](https://github.com/pattex67/Aubepine/releases) ; pour compiler soi-même, suivre
 [docs/Build.md](docs/Build.md) sur la branche `pattex`. Ne jouez qu'à des jeux que vous possédez et

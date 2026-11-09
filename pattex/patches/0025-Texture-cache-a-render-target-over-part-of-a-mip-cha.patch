@@ -1,0 +1,36 @@
+From 803f01252c7edc448cac8ffabb6366005d26788c Mon Sep 17 00:00:00 2001
+From: pattex67 <33281022+pattex67@users.noreply.github.com>
+Date: Mon, 9 Nov 2026 18:34:54 +0100
+Subject: [PATCH 25/25] Texture cache: a render target over part of a mip chain
+ can rescale (Kirby Air Riders' update at 2x)
+
+The updated game renders its race at a dynamic 1712x960 over its 2048x1152 mip chains.
+Those render targets have one level, but an alias that is a chain kept them from
+rescaling, so the depth buffer went down and back up again (dot grid, dark characters).
+ImageCanRescale now skips aliases that are mip_chain_rescaleable when scaling up.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/video_core/texture_cache/texture_cache.h | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index 7da064ad81..b460eb7e21 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -2595,6 +2595,12 @@ bool TextureCache<P>::ImageCanRescale(ImageBase& image) {
+     image.flags |= ImageFlagBits::CheckingRescalable;
+     for (const auto& alias : image.aliased_images) {
+         Image& other_image = slot_images[alias.id];
++        // A render target over part of a mip chain (Kirby Air Riders' updated version renders
++        // its race at a dynamic 1712x960 over its 2048x1152 chains): the chain follows it.
++        if (other_image.info.mip_chain_rescaleable &&
++            !Settings::values.resolution_info.downscale) {
++            continue;
++        }
+         if (!ImageCanRescale(other_image)) {
+             image.flags &= ~ImageFlagBits::CheckingRescalable;
+             return false;
+-- 
+2.51.0.windows.1
+
