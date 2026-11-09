@@ -335,6 +335,21 @@ public:
         return properties.properties.driverVersion;
     }
 
+    /// Returns the PCI device ID of the physical device.
+    u32 GetDeviceID() const {
+        return properties.properties.deviceID;
+    }
+
+    /// Returns the PCI vendor ID of the physical device.
+    u32 GetVendorID() const {
+        return properties.properties.vendorID;
+    }
+
+    /// Returns the UUID the driver's pipeline cache data is valid for.
+    std::span<const u8, VK_UUID_SIZE> GetPipelineCacheUUID() const {
+        return properties.properties.pipelineCacheUUID;
+    }
+
     /// Returns the device name.
     std::string_view GetModelName() const {
         return properties.properties.deviceName;
@@ -1148,7 +1163,8 @@ FN_MAX_LIMIT_LIST
         return extensions.maintenance4;
     }
 
-    /// Returns true if VK_KHR_pipeline_binary is enabled (compiled pipelines can be saved).
+    /// Returns true if VK_KHR_pipeline_binary is enabled: only shader cache v2 enables it, on
+    /// drivers that don't prefer their own cache.
     bool IsKhrPipelineBinarySupported() const {
         return extensions.pipeline_binary;
     }
@@ -1214,6 +1230,15 @@ FN_MAX_LIMIT_LIST
 
     bool IsNvidia() const noexcept {
         return properties.driver.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY;
+    }
+
+    /// NVIDIA's and AMD's drivers keep a disk cache of built pipelines of their own, so the
+    /// emulator keeps none on top: a VkPipelineCache only kept every pipeline the title ever built
+    /// in host memory (title 1: a 245 MB file, ~0.35 GB of RAM for the session) and copied it whole
+    /// at each save, which stalled frames, and pipelines built no slower without it.
+    bool DriverCachesPipelines() const noexcept {
+        return properties.driver.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY ||
+               properties.driver.driverID == VK_DRIVER_ID_AMD_PROPRIETARY;
     }
 
     bool IsMoltenVK() const noexcept {
@@ -1332,6 +1357,7 @@ private:
         VkPhysicalDeviceSubgroupSizeControlProperties subgroup_size_control{};
         VkPhysicalDeviceTransformFeedbackPropertiesEXT transform_feedback{};
         VkPhysicalDeviceMaintenance5PropertiesKHR maintenance5{};
+        VkPhysicalDevicePipelineBinaryPropertiesKHR pipeline_binary{};
         VkPhysicalDeviceDepthStencilResolveProperties depth_stencil_resolve{};
         VkPhysicalDeviceCustomBorderColorPropertiesEXT custom_border_color{};
         VkPhysicalDeviceCooperativeMatrixPropertiesKHR cooperative_matrix{};
