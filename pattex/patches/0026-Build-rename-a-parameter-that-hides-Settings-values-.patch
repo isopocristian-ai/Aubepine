@@ -1,0 +1,62 @@
+From 90cca2f9b48eef5c04016900e67a3cd38f6ca5d0 Mon Sep 17 00:00:00 2001
+From: pattex67 <33281022+pattex67@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 12:50:47 +0100
+Subject: [PATCH] Build: rename a parameter that hides Settings::values in
+ recommended_settings.cpp (MSVC turns C4459 into an error)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/common/recommended_settings.cpp | 16 ++++++++--------
+ 1 file changed, 8 insertions(+), 8 deletions(-)
+
+diff --git a/src/common/recommended_settings.cpp b/src/common/recommended_settings.cpp
+index 439af81b6b..60c5d2c768 100644
+--- a/src/common/recommended_settings.cpp
++++ b/src/common/recommended_settings.cpp
+@@ -25,11 +25,11 @@ std::map<std::string, std::string> ParseBackup(const std::string& backup) {
+ 
+ } // namespace
+ 
+-std::vector<RecommendedSettingChange> ApplyRecommendedSettings(Values& values) {
+-    const auto saved = ParseBackup(values.recommended_settings_backup.GetValue());
++std::vector<RecommendedSettingChange> ApplyRecommendedSettings(Values& settings_values) {
++    const auto saved = ParseBackup(settings_values.recommended_settings_backup.GetValue());
+     std::vector<RecommendedSettingChange> changes;
+     std::string backup;
+-    ForEachRecommendedSetting(values, [&](auto& setting, const auto& value) {
++    ForEachRecommendedSetting(settings_values, [&](auto& setting, const auto& value) {
+         std::string previous = setting.ToStringGlobal();
+         // A value backed up earlier stays; a setting the backup does not hold yet, such as one a
+         // later build added to the table, joins it.
+@@ -49,15 +49,15 @@ std::vector<RecommendedSettingChange> ApplyRecommendedSettings(Values& values) {
+         changes.push_back({&setting, std::move(previous), setting.ToStringGlobal()});
+     });
+     if (!changes.empty()) {
+-        values.recommended_settings_backup = backup;
++        settings_values.recommended_settings_backup = backup;
+     }
+     return changes;
+ }
+ 
+-std::vector<RecommendedSettingChange> RestorePreviousSettings(Values& values) {
+-    const auto saved = ParseBackup(values.recommended_settings_backup.GetValue());
++std::vector<RecommendedSettingChange> RestorePreviousSettings(Values& settings_values) {
++    const auto saved = ParseBackup(settings_values.recommended_settings_backup.GetValue());
+     std::vector<RecommendedSettingChange> changes;
+-    ForEachRecommendedSetting(values, [&](auto& setting, const auto&) {
++    ForEachRecommendedSetting(settings_values, [&](auto& setting, const auto&) {
+         const auto it = saved.find(setting.GetLabel());
+         if (it == saved.end()) {
+             return;
+@@ -71,7 +71,7 @@ std::vector<RecommendedSettingChange> RestorePreviousSettings(Values& values) {
+             changes.push_back({&setting, std::move(previous), setting.ToStringGlobal()});
+         }
+     });
+-    values.recommended_settings_backup = std::string{};
++    settings_values.recommended_settings_backup = std::string{};
+     return changes;
+ }
+ 
+-- 
+2.51.0.windows.1
+

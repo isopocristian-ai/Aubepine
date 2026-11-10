@@ -2,7 +2,7 @@
 
 Since 2026-11-08 this branch is [Lichii](https://github.com/zortos293/Lichii) nx2 (an Eglantine fork
 with the community's Ocarina of Time, AMD and performance work; `aae0b063f7`, build 117 and later, then
-merged again on 2026-11-09 at `3dae119aea`, build 125 and later)
+merged again on 2026-11-09 at `3dae119aea`, build 125 and later, and on 2026-11-10 at `bcb37c49f7`)
 with [Lichii PR #573](https://github.com/zortos293/Lichii/pull/573) (AMD and split GPU thread fixes for
 Ocarina of Time, measured on the same Radeon RX 9070 XT), the image store bounds checks of
 [CheezerWheezer's "AMD Superior" build](https://github.com/Tempus3214/Lichii) (as ported to Fritchii by
@@ -20,10 +20,12 @@ was done with an AI assistant (Claude Opus 5.5: reverse engineering, code and te
 
 `patches/` holds the commits we add as `git format-patch` files: `git am` of 0001 to 0008 on Lichii
 nx2 `92f0212408`, then merging Lichii nx2 `aae0b063f7` and PR #573 (`a2178a6371`), then 0009 to 0022,
-then merging Lichii nx2 `3dae119aea`, then 0023 to 0025, reproduces this branch's code. That last
-merge drops 0009 and 0010, which Lichii now does its own way (its shader cache v2, #1036, and #792),
+then merging Lichii nx2 `3dae119aea`, then 0023 to 0025, then merging Lichii nx2 `bcb37c49f7`, then
+0026, reproduces this branch's code. The `3dae119aea` merge drops 0009 and 0010, which Lichii now does its own way (its shader cache v2, #1036, and #792),
 keeps 0004's 1.5 GiB rule next to Lichii's #880, and keeps 0013's guard on image downloads next to
-Lichii's stale-image clear (#818); the merge commit in the branch history has the exact resolution.
+Lichii's stale-image clear (#818). The `bcb37c49f7` merge drops 0024 (Lichii #1045 fixes the same
+local) and keeps 0015's drop of the caches over destroyed memory after Lichii's #1199, which unmaps
+every GPU range into that memory. The merge commits in the branch history have the exact resolutions.
 
 | Patch | Content |
 |---|---|
@@ -50,8 +52,9 @@ Lichii's stale-image clear (#818); the merge commit in the branch history has th
 | 0021 | Resolution scaling: 2D images with a mip chain can be scaled (first attempt for the grid fixed by 0022; on its own it blacked out Mario Kart World's races at 2x). |
 | 0022 | **Kirby Air Riders at 2x**: a mip chain is scaled only while its level 0 is rendered with a depth buffer that scales. The game renders its race into such chains with its depth buffer bound; kept at 1x, they forced that depth down and back up every frame, which keeps one depth sample in four, and its main pass (depth test EQUAL) drew one pixel in four: a grid of dots and dark characters. `EDEN_NX2_RESCALE_MIPS=0` turns this off. Only acts when resolution scaling is on. |
 | 0023 | **AMD**: the ASTC decoder and the unswizzle shaders check every image store against the image's edge (by Frizti and CheezerWheezer: "AMD Superior" build 7 `132cc46c9e`, as ported to Fritchii, QuincyForbes/Lichii `c739320e5b`). Edge blocks of images whose size isn't a multiple of the block size, and workgroups rounded past the image, stored texels outside it; NVIDIA drops those, AMD wrote them into other images (black blocks, a crosshatch) and could lose the GPU. |
-| 0024 | Build: renames a local that hides another in `nx2_stutter_trace.cpp` (MSVC turns C4456 into an error). |
+| 0024 | *(Dropped in the merge with Lichii `bcb37c49f7`: Lichii #1045 does the same.)* Build: renames a local that hides another in `nx2_stutter_trace.cpp` (MSVC turns C4456 into an error). |
 | 0025 | **Kirby Air Riders at 2x, updated game**: an image the mip chain rule of 0022 lets scale no longer stops the render targets that alias it from scaling. The updated game renders its race at a dynamic 1712x960 inside 2048x1152 mip chains, and the grid of dots stayed there. |
+| 0026 | Build: renames a parameter that hides `Settings::values` in Lichii's new `recommended_settings.cpp` (MSVC turns C4459 into an error). |
 
 `patches-pokedinner/` keeps the 40 patches of the previous base (PokeDinner + Eglantine nx2 up to
 e736dfde9e) for reference; the branch history keeps them too, as the first parent of the merge that
@@ -73,16 +76,16 @@ Windows 11, Ryzen 7 9800X3D, Radeon RX 9070 XT, short sessions closed normally.
 
 | Game | State |
 |---|---|
-| The Legend of Zelda: Ocarina of Time | 5-minute runs from a save without a crash, no rejected shaders, no white flashes; checked again after 0013-0018 (30-31 FPS). On Lichii build 125 (0023-0025), a 6-minute run from the save: about 58 frames per second on average, 60 most of the time, with three stutters of 0.6 to 1.5 s, no rejected shaders (GPU accuracy Low, DMA Unsafe). Lichii's built-in FPS Unlock (#655) now takes Dynamic FPS's place and keeps the game's speed; it and Max Resolution are add-ons on by default: the game renders at full resolution (28-31 FPS here with Dynamic FPS since PR #573, 23-24 before); turn Max Resolution off in Add-Ons for speed. Its matrix programs run on `VK_KHR_cooperative_matrix` on RDNA4. The second run reloaded its 707 compiled shaders. Outdoor daytime views not checked on this branch yet. |
-| Kirby Air Riders | 4 minutes: menus and races with their scenery, no rejected shaders (four menu compute programs before 0019), no GPU loss with patch 0008. At 2x resolution its races render since 0020 and 0022 (black with checkerboards, then a grid of dots with dark characters before), and in the updated game since 0025: two races at 2x on Lichii build 125, no grid. The first session after an update of the emulator compiles its shaders again (about 200 s), the next ones boot in about 40 s. From the second session on, its compiled shaders are reloaded instead of compiled again. Still seen at 1x and 2x: Kirby's model is dark on the vehicle select, and the character preview is magenta for a moment. Closing the emulator during a race can hang. |
+| The Legend of Zelda: Ocarina of Time | 5-minute runs from a save without a crash, no rejected shaders, no white flashes; checked again after 0013-0018 (30-31 FPS). On Lichii build 125 (0023-0025), a 6-minute run from the save: about 58 frames per second on average, 60 most of the time, with three stutters of 0.6 to 1.5 s, no rejected shaders (GPU accuracy Low, DMA Unsafe). After the 2026-11-10 merge: 59 FPS on average over 5 minutes, longest stutter 0.46 s, a clean close. Lichii's built-in FPS Unlock (#655) now takes Dynamic FPS's place and keeps the game's speed; it and Max Resolution are add-ons on by default: the game renders at full resolution (28-31 FPS here with Dynamic FPS since PR #573, 23-24 before); turn Max Resolution off in Add-Ons for speed. Its matrix programs run on `VK_KHR_cooperative_matrix` on RDNA4. The second run reloaded its 707 compiled shaders. Outdoor daytime views not checked on this branch yet. |
+| Kirby Air Riders | 4 minutes: menus and races with their scenery, no rejected shaders (four menu compute programs before 0019), no GPU loss with patch 0008. At 2x resolution its races render since 0020 and 0022 (black with checkerboards, then a grid of dots with dark characters before), and in the updated game since 0025: two races at 2x on Lichii build 125, no grid; after the 2026-11-10 merge a full race at 2x, about 56 FPS once loaded, a clean close. The first session after an update of the emulator compiles its shaders again (about 200 s), the next ones boot in about 40 s. From the second session on, its compiled shaders are reloaded instead of compiled again. Still seen at 1x and 2x: Kirby's model is dark on the vehicle select, and the character preview is magenta for a moment. Closing the emulator during a race can hang. |
 | Donkey Kong Bananza | Saves load and play, no rejected shaders. |
 | Mario Kart World | Title and races, 31-54 FPS, no rejected shaders; checked again at 2x after 0022 (menus, course flyovers and a race start render). |
 | Star Fox | Intro and training, 33-34 FPS, no rejected shaders (needs the window patch). |
 | Yoshi and the Mysterious Book | Docked, played by hand: intro, chapter page, the first mission (black before 0017) and a second level render, about 10 minutes in one session; no compute program rejected after 0018. One vertex program on the title screen still reads as zeros (three draws skipped, nothing visible). A book page's illustration that was missing before 0018 was not checked again. Closing the emulator during the game can hang. |
 | Metroid Prime 4 | Not run on this branch yet. |
 
-After the merge with Lichii build 125 (2026-11-09), only Ocarina of Time and Kirby Air Riders were run
-again; the other rows describe the build before it.
+After the merges with Lichii of 2026-11-09 and 2026-11-10, only Ocarina of Time and Kirby Air Riders
+were run again; the other rows describe the build before them.
 
 ## Credits
 
@@ -95,7 +98,7 @@ PokeDinner (Franseven); Nemyu (Uesleizito Zin); Selevet Eglantine (sylvieistaken
 
 # En français
 
-Depuis le 8 novembre 2026, Aubépine repose sur **Lichii** nx2 (build 125 et suivants depuis le 9), avec la PR
+Depuis le 8 novembre 2026, Aubépine repose sur **Lichii** nx2 (build 125 et suivants depuis le 9, mis à jour le 10), avec la PR
 Lichii #573 (correctifs AMD pour Zelda, mesurés sur la même RX 9070 XT : 28-30 FPS en pleine
 résolution au lieu de 23-24) et la vérification des bords d'image dans le décodage ASTC de la build
 « AMD Superior » (reprise par Frizti dans Fritchii : sur AMD, des blocs noirs puis la perte du GPU).

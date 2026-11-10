@@ -29,7 +29,8 @@ with a few fixes of its own for the games we play on AMD.</h4>
 
 ## What it adds
 
-Since 2026-11-08 Aubépine builds on **Lichii nx2** (build 125 and later since 2026-11-09), which brings the
+Since 2026-11-08 Aubépine builds on **Lichii nx2** (build 125 and later since 2026-11-09, last merged on
+2026-11-10), which brings the
 community's work on **The Legend of Zelda: Ocarina of Time** (vegetation, fog, white flashes, the
 upscaler, performance, matrix programs on `VK_KHR_cooperative_matrix` for RDNA4) and had caught up
 with most of this fork's earlier additions (Star Fox's audio, the Switch 2 mouse, Mario Kart World and
@@ -72,7 +73,7 @@ Tested on Windows 11, Ryzen 7 9800X3D and Radeon RX 9070 XT, in short sessions.
 
 | Game | State |
 |---|---|
-| The Legend of Zelda: Ocarina of Time | Runs of 5 to 6 minutes from a save without a crash, no rejected shaders, no white flashes. Lichii's built-in Max Resolution and FPS Unlock add-ons are on by default: about 58 FPS on average at full resolution here, 60 most of the time, with a few stutters (turn Max Resolution off in Add-Ons for speed). |
+| The Legend of Zelda: Ocarina of Time | Runs of 5 to 6 minutes from a save without a crash, no rejected shaders, no white flashes. Lichii's built-in Max Resolution and FPS Unlock add-ons are on by default: about 59 FPS on average at full resolution here, 60 most of the time, with a few short stutters (turn Max Resolution off in Add-Ons for speed). |
 | Kirby Air Riders | Menus and races with their scenery, no rejected shaders, also at 2x resolution in the base game and its update; the first session compiles its shaders (about 200 s to boot), later ones boot in about 40 s. Kirby's model is dark on the vehicle select. |
 | Donkey Kong Bananza | Saves load and play, no rejected shaders. |
 | Mario Kart World | Title and races, 31-54 FPS, no rejected shaders. |
@@ -80,7 +81,10 @@ Tested on Windows 11, Ryzen 7 9800X3D and Radeon RX 9070 XT, in short sessions.
 | Yoshi and the Mysterious Book | Docked, played by hand: intro, chapter page, the first mission and a second level render (about 10 minutes); one title-screen program still reads as zeros, with nothing visible missing. Closing during the game can hang. |
 | Metroid Prime 4 | Ran at 60 FPS on our previous base; not run on this one yet. |
 
-Only Ocarina of Time and Kirby Air Riders were run again after the move to Lichii build 125.
+Only Ocarina of Time and Kirby Air Riders were run again after the move to Lichii build 125 and the
+2026-11-10 update. On its first start this version asks once whether to use Lichii's recommended
+performance settings; they replace yours (memory layout and DMA accuracy included), and Help >
+Restore My Previous Settings puts yours back.
 
 Only play games you own and dumped yourself. No keys, firmware or game files are provided here.
 
@@ -119,7 +123,7 @@ Aubépine is licensed under the GPLv3 (or any later version), like Eglantine and
 (pilote AMD ; pas testé sur NVIDIA ni Intel). Depuis le 8 novembre 2026 il repose sur **Lichii**
 (fork d'Eglantine), qui apporte tout le travail de la communauté sur **Zelda: Ocarina of Time**
 (végétation, brouillard, flashs, performances, calcul matriciel RDNA4) et avait déjà repris l'essentiel
-de nos anciens ajouts. Depuis le 9 novembre, c'est la build 125 de Lichii : Zelda y tourne vers 60 FPS en pleine résolution
+de nos anciens ajouts. Depuis le 9 novembre, c'est la build 125 de Lichii (mise à jour le 10) : Zelda y tourne vers 60 FPS en pleine résolution
 sur une RX 9070 XT (patch « FPS Unlock » intégré) et les shaders compilés sont gardés par le cache de
 Lichii. S'y ajoutent la PR Lichii #573, la vérification des bords d'image dans le décodage ASTC
 (build « AMD Superior », reprise par Frizti : blocs noirs puis perte du GPU sur AMD) et nos correctifs : la carte d'ombres de la forêt Kokiri sur AMD, la taille des buffers
@@ -133,4 +137,6 @@ Star Fox, Yoshi) tournent sans shader de calcul refusé dans nos essais courts ;
 (patch « Max Resolution » intégré, à désactiver dans les Add-Ons pour gagner des FPS). Une version compilée pour Windows est dans
 les [Releases](https://github.com/pattex67/Aubepine/releases) ; pour compiler soi-même, suivre
 [docs/Build.md](docs/Build.md) sur la branche `pattex`. Ne jouez qu'à des jeux que vous possédez et
-avez extraits vous-même : aucun fichier de jeu, clé ou firmware n'est fourni.
+avez extraits vous-même : aucun fichier de jeu, clé ou firmware n'est fourni. Au premier lancement,
+cette version propose une seule fois les réglages recommandés de Lichii : ils remplacent les vôtres
+(mémoire et précision DMA comprises) ; Aide > Restore My Previous Settings les remet.
